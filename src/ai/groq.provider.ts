@@ -14,8 +14,9 @@ export class GroqProvider implements AIProvider {
 
   async chat(input: AIChatInput): Promise<AIChatResponse> {
     logger.info('AI provider request started');
-
+    
     try {
+      logger.info(`AI messages: ${JSON.stringify(input.messages)}`);
       const response = await this.client.chat.completions.create({
         messages: input.messages,
         model: input.model || env.GROQ_MODEL,
@@ -25,6 +26,7 @@ export class GroqProvider implements AIProvider {
       const model = response.model;
 
       logger.info('AI provider response received');
+      logger.info(`AI response: ${JSON.stringify(response)}`);
 
       return {
         content,

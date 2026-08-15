@@ -1,8 +1,19 @@
 import { z } from 'zod';
 
+
 export const chatRequestSchema = z.object({
-  message: z.string().min(1, 'Message is required').max(20000, 'Message is too long'),
-  systemPrompt: z.string().max(5000, 'System prompt is too long').optional(),
+  message: z
+    .string()
+    .trim()
+    .min(1, 'Message is required')
+    .max(20_000, 'Message is too long'),
+
+  systemPrompt: z
+    .string()
+    .trim()
+    .min(1, 'System prompt is required')
+    .max(5_000, 'System prompt is too long')
+    .optional(),
 });
 
-export type ChatRequestSchema = z.infer<typeof chatRequestSchema>;
+export type ChatRequest = z.infer<typeof chatRequestSchema>;

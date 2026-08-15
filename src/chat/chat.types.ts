@@ -1,9 +1,1 @@
-export interface ChatRequest {
-  message: string;
-  systemPrompt?: string;
-}
-
-export interface ChatResponse {
-  content: string;
-  model: string;
-}
+export type { ChatRequest, ChatResponse } from './chat.schema';

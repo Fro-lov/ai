@@ -1,30 +1,42 @@
-import { AIProvider, AIMessage } from '../ai';
+import { AIMessage } from '../ai';
+import { AIService } from '../ai/ai.service';
 import { ChatRequest, ChatResponse } from './chat.types';
 import { logger } from '../utils/logger';
 
 export class ChatService {
-  constructor(private aiProvider: AIProvider) {}
+  constructor(private aiService: AIService) {}
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     logger.info('Chat request started');
 
-    const messages: AIMessage[] = [];
+    let messages: AIMessage[] = [];
 
-    if (request.systemPrompt) {
+    // Use provided messages if available (for conversation history)
+    if (request.messages && request.messages.length > 0) {
+      messages = request.messages;
+    } else {
+      // Build messages from single message format
+      if (request.systemPrompt) {
+        messages.push({
+          role: 'system',
+          content: request.systemPrompt,
+        });
+      }
+
       messages.push({
-        role: 'system',
-        content: request.systemPrompt,
+        role: 'user',
+        content: request.message,
       });
     }
 
-    messages.push({
-      role: 'user',
-      content: request.message,
-    });
-
-    const response = await this.aiProvider.chat({
-      messages,
-    });
+    const response = await this.aiService.chat(
+      {
+        messages,
+        model: request.model,
+        maxTokens: request.maxTokens,
+      },
+      request.provider
+    );
 
     logger.info('Chat request completed');
 

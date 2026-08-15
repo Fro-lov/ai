@@ -9,8 +9,12 @@ Backend-сервис, предоставляющий единый AI API для 
 ## Текущие возможности
 
 - `POST /api/chat` — отправка сообщений AI
-- Groq provider
+- Мульти-провайдерная архитектура AI
+- Groq provider (подключён)
 - System prompt
+- Выбор провайдера и модели
+- Telegram Bot интеграция
+- Conversation history (в памяти)
 - Health endpoint
 - Docker поддержка
 
@@ -21,6 +25,7 @@ Backend-сервис, предоставляющий единый AI API для 
 - Fastify
 - Zod
 - Groq SDK
+- grammY (Telegram Bot)
 - Docker
 
 ## Запуск
@@ -43,6 +48,8 @@ cp .env.example .env
 
 ```env
 GROQ_API_KEY=your_api_key_here
+AI_DEFAULT_PROVIDER=groq
+GROQ_MODEL=llama-3.1-8b-instant
 ```
 
 ### Разработка
@@ -52,6 +59,28 @@ npm run dev
 ```
 
 Сервис будет доступен по адресу: `http://localhost:3001`
+
+### Telegram Bot (опционально)
+
+Для включения Telegram Bot:
+
+1. Получите токен бота у [@BotFather](https://t.me/botfather) в Telegram
+2. Добавьте в `.env`:
+
+```env
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_SYSTEM_PROMPT=You are a helpful AI assistant.
+CONVERSATION_HISTORY_LIMIT=10
+```
+
+3. Запустите сервис:
+
+```bash
+npm run dev
+```
+
+Бот будет автоматически запущен при старте сервера.
 
 ### Production
 
@@ -79,12 +108,35 @@ curl http://localhost:3001/health
 
 ### Chat endpoint
 
-#### Простое сообщение
+#### Простое сообщение (использует default provider)
 
 ```bash
 curl -X POST http://localhost:3001/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"Привет"}'
+```
+
+#### С указанием провайдера
+
+```bash
+curl -X POST http://localhost:3001/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Привет",
+    "provider": "groq"
+  }'
+```
+
+#### С указанием модели
+
+```bash
+curl -X POST http://localhost:3001/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Объясни TypeScript",
+    "provider": "groq",
+    "model": "llama-3.1-8b-instant"
+  }'
 ```
 
 #### С system prompt
@@ -94,7 +146,8 @@ curl -X POST http://localhost:3001/api/chat \
   -H "Content-Type: application/json" \
   -d '{
     "message": "Объясни TypeScript",
-    "systemPrompt": "Отвечай кратко."
+    "systemPrompt": "Отвечай кратко.",
+    "provider": "groq"
   }'
 ```
 
@@ -106,6 +159,22 @@ curl -X POST http://localhost:3001/api/chat \
   "model": "llama-3.1-8b-instant"
 }
 ```
+
+### Telegram Bot команды
+
+- `/start` — Приветственное сообщение
+- `/reset` — Очистить историю диалога
+- `/context` — Показать информацию о текущем диалоге
+
+### Telegram Bot поведение
+
+**В личных чатах:**
+- Бот отвечает на все сообщения
+
+**В группах:**
+- Бот отвечает только если его упомянули (@botname)
+- Бот отвечает если сообщение является reply на сообщение бота
+- При упоминании бота, упоминание удаляется из текста перед отправкой в AI
 
 ## Docker
 
@@ -123,23 +192,71 @@ curl http://localhost:3001/health
 
 ## Архитектура
 
+### HTTP API
+
 ```
 Client
   ↓
 POST /api/chat
   ↓
-Fastify Route
+Fastify Route (Zod validation)
   ↓
 ChatService
   ↓
+AIService (provider registry)
+  ↓
 AIProvider interface
   ↓
-GroqProvider
+GroqProvider (или другие провайдеры)
   ↓
 Groq API
   ↓
 AI response
 ```
+
+### Telegram Bot
+
+```
+Telegram
+  ↓
+Telegram Bot (grammY)
+  ↓
+Conversation Memory (in-memory)
+  ↓
+ChatService
+  ↓
+AIService
+  ↓
+AIProvider
+  ↓
+Groq API
+  ↓
+Telegram response
+```
+
+### Переменные окружения
+
+**Основные:**
+- `GROQ_API_KEY` — API ключ для Groq
+- `AI_DEFAULT_PROVIDER` — провайдер по умолчанию (groq)
+- `GROQ_MODEL` — модель по умолчанию для Groq
+- `PORT` — порт сервера (3001)
+- `HOST` — хост сервера (0.0.0.0)
+
+**Telegram Bot:**
+- `TELEGRAM_ENABLED` — включить Telegram bot (true/false)
+- `TELEGRAM_BOT_TOKEN` — токен Telegram бота
+- `TELEGRAM_SYSTEM_PROMPT` — системный промпт для Telegram
+- `CONVERSATION_HISTORY_LIMIT` — лимит истории сообщений (10)
+
+### Обработка ошибок
+
+Сервис возвращает структурированные ошибки с кодами:
+
+- `VALIDATION_ERROR` — ошибка валидации запроса (400)
+- `PROVIDER_NOT_FOUND` — провайдер не найден (404)
+- `AI_PROVIDER_ERROR` — ошибка AI провайдера (502)
+- `INTERNAL_ERROR` — внутренняя ошибка сервера (500)
 
 ## Планы развития
 

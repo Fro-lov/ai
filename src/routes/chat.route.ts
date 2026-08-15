@@ -1,13 +1,14 @@
 import { FastifyInstance } from 'fastify';
 import { ZodTypeProvider } from 'fastify-type-provider-zod';
 
-import { chatRequestSchema } from '../chat/chat.schema';
-import { ChatService } from '../chat/chat.service';
-import { GroqProvider } from '../ai';
+import {
+  chatRequestSchema,
+  chatResponseSchema,
+} from '../chat/chat.schema';
 
-export async function chatRoute(fastify: FastifyInstance) {
-  const aiProvider = new GroqProvider();
-  const chatService = new ChatService(aiProvider);
+import { ChatService } from '../chat/chat.service';
+
+export async function chatRoute(fastify: FastifyInstance, chatService: ChatService) {
 
   fastify
     .withTypeProvider<ZodTypeProvider>()
@@ -16,6 +17,9 @@ export async function chatRoute(fastify: FastifyInstance) {
       {
         schema: {
           body: chatRequestSchema,
+          response: {
+            200: chatResponseSchema,
+          },
         },
       },
       async (request) => {

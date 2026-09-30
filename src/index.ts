@@ -17,6 +17,8 @@ import { AIService } from './ai/ai.service';
 import { GroqProvider } from './ai';
 import { ChatService } from './chat/chat.service';
 import { TelegramService } from './telegram/telegram.service';
+import { PromptService } from './prompts/prompt.service';
+import { RAGService } from './vector/rag.service';
 
 async function buildServer() {
   const fastify = Fastify({
@@ -28,9 +30,14 @@ async function buildServer() {
 
   await fastify.register(cors);
 
+  // Initialize RAG Service & vector store
+  const ragService = new RAGService();
+  await ragService.init();
+
   // Initialize AI services
   const aiService = new AIService([new GroqProvider()], env.AI_DEFAULT_PROVIDER);
-  const chatService = new ChatService(aiService);
+  const promptService = new PromptService();
+  const chatService = new ChatService(aiService, promptService, ragService);
 
   // Initialize conversation services
   const conversationStore = new MemoryConversationStore();
@@ -42,7 +49,7 @@ async function buildServer() {
   // Initialize Telegram bot if enabled
   let telegramService: TelegramService | null = null;
   if (env.TELEGRAM_ENABLED === 'true' && env.TELEGRAM_BOT_TOKEN) {
-    telegramService = new TelegramService(conversationService, chatService);
+    telegramService = new TelegramService(conversationService, chatService, promptService, aiService);
   }
 
   await fastify.register(healthRoute);
@@ -107,6 +114,7 @@ async function start() {
       `Failed to start server: ${error instanceof Error ? error.message : String(error)}`,
     );
 
+    // eslint-disable-next-line no-undef
     process.exit(1);
   }
 }

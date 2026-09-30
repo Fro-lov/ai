@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { AIMessage } from '../ai';
 
 export const chatRequestSchema = z.object({
   message: z
@@ -26,6 +25,11 @@ export const chatRequestSchema = z.object({
 
   maxTokens: z
     .number()
+    .optional(),
+
+  projectId: z
+    .string()
+    .trim()
     .optional(),
 
   messages: z.array(z.object({

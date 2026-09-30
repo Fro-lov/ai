@@ -1,4 +1,4 @@
-import { AIProvider, AIChatInput, AIChatResponse } from './types';
+import { AIProvider, AIChatInput, AIChatResponse, AIProviderRuntimeInfo } from './types';
 import { logger } from '../utils/logger';
 import { ProviderNotFoundError, AIProviderError } from '../utils/errors';
 
@@ -41,5 +41,10 @@ export class AIService {
       logger.error(`AI provider '${provider.name}' request failed: ${error instanceof Error ? error.message : String(error)}`);
       throw new AIProviderError(`Failed to get response from AI provider '${provider.name}'`);
     }
+  }
+
+  getRuntimeInfo(): AIProviderRuntimeInfo {
+    const provider = this.getProvider(this.defaultProvider);
+    return provider.getRuntimeInfo();
   }
 }

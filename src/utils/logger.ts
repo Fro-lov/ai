@@ -11,12 +11,13 @@ function formatMessage(level: LogLevel, message: string): string {
   return `[${timestamp}] [${logLevels[level]}] ${message}`;
 }
 
+/* eslint-disable no-undef */
 export const logger = {
   info: (message: string) => {
-    console.log(formatMessage('info', message));
+    console.log(`[INFO] ${message}`);
   },
   error: (message: string) => {
-    console.error(formatMessage('error', message));
+    console.error(`[ERROR] ${message}`);
   },
   warn: (message: string) => {
     console.warn(formatMessage('warn', message));

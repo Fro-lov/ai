@@ -4,12 +4,12 @@ import { logger } from '../utils/logger';
 
 export class ConversationService {
   constructor(
-    private store: ConversationStore,
-    private historyLimit: number
+    private _store: ConversationStore,
+    private _historyLimit: number
   ) {}
 
   getOrCreate(id: string): Conversation {
-    let conversation = this.store.get(id);
+    let conversation = this._store.get(id);
     
     if (!conversation) {
       conversation = {
@@ -18,7 +18,7 @@ export class ConversationService {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      this.store.set(id, conversation);
+      this._store.set(id, conversation);
       logger.info(`Created new conversation: ${id}`);
     }
     
@@ -34,33 +34,33 @@ export class ConversationService {
       conversation.updatedAt = new Date();
 
       // Enforce history limit (only for user/assistant messages)
-      if (conversation.messages.length > this.historyLimit) {
-        const removed = conversation.messages.length - this.historyLimit;
-        conversation.messages = conversation.messages.slice(-this.historyLimit);
+      if (conversation.messages.length > this._historyLimit) {
+        const removed = conversation.messages.length - this._historyLimit;
+        conversation.messages = conversation.messages.slice(-this._historyLimit);
         logger.info(`Trimmed ${removed} old messages from conversation: ${id}`);
       }
     }
 
-    this.store.set(id, conversation);
+    this._store.set(id, conversation);
     return conversation;
   }
 
   getMessages(id: string): AIMessage[] {
-    const conversation = this.store.get(id);
+    const conversation = this._store.get(id);
     return conversation?.messages || [];
   }
 
   reset(id: string): void {
-    this.store.delete(id);
+    this._store.delete(id);
     logger.info(`Reset conversation: ${id}`);
   }
 
   getConversationInfo(id: string): { id: string; messageCount: number; historyLimit: number } {
-    const conversation = this.store.get(id);
+    const conversation = this._store.get(id);
     return {
       id,
       messageCount: conversation?.messages.length || 0,
-      historyLimit: this.historyLimit,
+      historyLimit: this._historyLimit,
     };
   }
 

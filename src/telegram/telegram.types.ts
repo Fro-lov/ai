@@ -11,5 +11,7 @@ export interface TelegramMessageContext {
   isPrivate: boolean;
   text: string;
   replyToMessageId?: number;
+  isReplyToBot: boolean;
   mentionedBot: boolean;
 }
+

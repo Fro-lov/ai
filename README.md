@@ -162,9 +162,12 @@ curl -X POST http://localhost:3001/api/chat \
 
 ### Telegram Bot команды
 
-- `/start` — Приветственное сообщение
+- `/start` — Начать работу и узнать как взаимодействовать (различается для личных чатов и групп)
+- `/help` — Показать список команд
 - `/reset` — Очистить историю диалога
 - `/context` — Показать информацию о текущем диалоге
+- `/limits` — Показать информацию о лимитах AI provider
+- `/history` — Показать всю историю диалога в виде текста
 
 ### Telegram Bot поведение
 
@@ -175,6 +178,15 @@ curl -X POST http://localhost:3001/api/chat \
 - Бот отвечает только если его упомянули (@botname)
 - Бот отвечает если сообщение является reply на сообщение бота
 - При упоминании бота, упоминание удаляется из текста перед отправкой в AI
+
+### Telegram Privacy Mode
+
+Бот работает с Telegram Privacy Mode без необходимости отключать его. Для работы в группах:
+
+1. Добавьте бота в группу
+2. Используйте `@bot_username вопрос` или ответьте (reply) на сообщение бота
+
+Если Privacy Mode влияет на уже добавленного бота после изменения настроек, возможно потребуется повторное добавление бота в группу.
 
 ## Docker
 
@@ -234,6 +246,37 @@ Groq API
 Telegram response
 ```
 
+### Prompt Architecture
+
+Сервис использует многоуровневую систему промптов для формирования AI контекста:
+
+```
+Global Prompt
+    ↓
+Project Prompt (опционально)
+    ↓
+Conversation History
+    ↓
+Current User Message
+```
+
+**Global Prompt** (`AI_SYSTEM_PROMPT`):
+- Определяет общее поведение AI
+- Задаёт стиль мышления и принципы ответов
+- Управляет отношением к фактам и неопределённости
+- Обязателен для заполнения
+
+**Project Prompt** (`AI_PROJECT_PROMPT_*`):
+- Содержит факты о конкретном проекте
+- Технологии, версии, архитектура
+- Подтверждённые команды и API
+- Опциональный, используется при указании `projectId`
+
+**Conversation History**:
+- Хранит историю диалога
+- Передаётся как часть контекста
+- Ограничивается `CONVERSATION_HISTORY_LIMIT`
+
 ### Переменные окружения
 
 **Основные:**
@@ -243,11 +286,20 @@ Telegram response
 - `PORT` — порт сервера (3001)
 - `HOST` — хост сервера (0.0.0.0)
 
+**Prompts:**
+- `AI_SYSTEM_PROMPT` — глобальный промпт поведения AI (обязательный)
+- `AI_PROJECT_PROMPT_ONTER_AI` — контекст проекта onter-ai (опциональный)
+- `AI_PROJECT_PROMPT_MINECRAFT` — контекст проекта minecraft (опциональный)
+- `AI_PROJECT_PROMPT_SCRAP_EVOLUTION` — контекст проекта scrap-evolution (опциональный)
+
 **Telegram Bot:**
 - `TELEGRAM_ENABLED` — включить Telegram bot (true/false)
 - `TELEGRAM_BOT_TOKEN` — токен Telegram бота
-- `TELEGRAM_SYSTEM_PROMPT` — системный промпт для Telegram
+- `TELEGRAM_SYSTEM_PROMPT` — системный промпт для Telegram (устарел, используйте AI_SYSTEM_PROMPT)
 - `CONVERSATION_HISTORY_LIMIT` — лимит истории сообщений (10)
+
+**AI Settings:**
+- `AI_MAX_TOKENS` — максимальное количество токенов в ответе (800)
 
 ### Обработка ошибок
 
@@ -258,20 +310,30 @@ Telegram response
 - `AI_PROVIDER_ERROR` — ошибка AI провайдера (502)
 - `INTERNAL_ERROR` — внутренняя ошибка сервера (500)
 
+### Groq Rate Limits
+
+Информация о лимитах Groq берётся из HTTP response headers API. Команда `/limits` в Telegram показывает доступные данные:
+
+- Remaining requests — оставшиеся запросы
+- Remaining tokens — оставшиеся токены
+- Reset requests — время сброса лимита запросов
+- Reset tokens — время сброса лимита токенов
+
+Эти значения относятся к конкретным лимитным окнам, предоставляемым Groq API. Не следует интерпретировать их как полный остаток месячной или дневной квоты без подтверждения соответствующим API полем.
+
 ## Планы развития
 
 В будущем планируется добавить:
 
-1. Telegram bot
-2. PostgreSQL для хранения истории
-3. Система диалогов
-4. Проекты и контекст
-5. Task management
-6. Trello интеграция
-7. AI moderation
-8. Tools/function calling
-9. Другие AI providers (Gemini, OpenRouter)
-10. API для Minecraft/KubeJS и других сервисов
+1. PostgreSQL для хранения истории
+2. Система диалогов
+3. Проекты и контекст
+4. Task management
+5. Trello интеграция
+6. AI moderation
+7. Tools/function calling
+8. Другие AI providers (Gemini, OpenRouter)
+9. API для Minecraft/KubeJS и других сервисов
 
 ## Скрипты
 

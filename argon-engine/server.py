@@ -44,6 +44,11 @@ async def on_startup():
 async def get_status():
     return core.get_status()
 
+@app.get("/api/limits", dependencies=[Depends(verify_token)])
+async def get_limits():
+    quotas = await core.get_quotas()
+    return {"quotas": quotas}
+
 @app.post("/api/chat", dependencies=[Depends(verify_token)])
 async def chat_endpoint(req: ChatRequest):
     # Извлекаем последнее пользовательское сообщение или форматируем цепочку

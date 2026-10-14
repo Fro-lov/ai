@@ -208,3 +208,13 @@ class ArgonCore:
             "freeDiskGb": free_gb,
             "uptimeSeconds": round(time.time() - self.start_time)
         }
+
+    async def get_quotas(self) -> Dict[str, Any]:
+        if self.client and hasattr(self.client, "_fetch_quota"):
+            try:
+                await self.client._fetch_quota(flash=True, advanced=True)
+            except Exception:
+                pass
+        if self.client and hasattr(self.client, "_quotas"):
+            return self.client._quotas
+        return {}

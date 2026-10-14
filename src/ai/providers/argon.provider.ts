@@ -140,6 +140,22 @@ export class ArgonProvider implements AIProvider {
     return await response.json() as { success: boolean };
   }
 
+  async getLimits(): Promise<{ quotas: Record<string, any> }> {
+    const url = `${this.baseUrl}/api/limits`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${this.secretToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Limits check failed with code ${response.status}`);
+    }
+
+    return await response.json() as { quotas: Record<string, any> };
+  }
+
   getRuntimeInfo(): AIProviderRuntimeInfo {
     return {
       provider: this.name,

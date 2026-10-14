@@ -421,25 +421,47 @@ export class TelegramService {
       const rateLimit = runtimeInfo.rateLimit;
 
       let message = `
-📈 Информация о лимитах:
+📈 <b>Информация о лимитах:</b>
 • Provider: ${runtimeInfo.provider}
 • Model: ${runtimeInfo.model}
       `.trim();
 
       if (rateLimit) {
-        message += `
-
-📊 Rate Limit:
+        message += `\n\n📊 <b>Rate Limit (Groq):</b>
 • Remaining requests: ${rateLimit.remainingRequests || 'недоступно'}
 • Remaining tokens: ${rateLimit.remainingTokens || 'недоступно'}
 • Reset requests: ${rateLimit.resetRequests || 'недоступно'}
-• Reset tokens: ${rateLimit.resetTokens || 'недоступно'}
-        `.trim();
-      } else {
-        message += `\n\n⚠️ Информация о лимитах пока недоступна. Сделайте хотя бы один запрос к AI.`;
+• Reset tokens: ${rateLimit.resetTokens || 'недоступно'}`;
       }
 
-      await ctx.reply(message);
+      const userId = ctx.from?.id;
+      if (this.isAdmin(userId) && this.argonProvider) {
+        try {
+          const argonLimits = await this.argonProvider.getLimits();
+          if (argonLimits && argonLimits.quotas && Object.keys(argonLimits.quotas).length > 0) {
+            message += `\n\n⚡ <b>Квоты Gemini 4 Argon (Web Session):</b>\n`;
+            for (const [key, q] of Object.entries(argonLimits.quotas)) {
+              if (typeof q === 'object' && q !== null) {
+                const label = q.label || key;
+                if (label === 'default') continue;
+                const remaining = q.remaining !== undefined ? q.remaining : '∞';
+                const total = q.total !== undefined ? q.total : '∞';
+                const usage = q.usage_percentage !== undefined ? `${q.usage_percentage}%` : '0%';
+                let resetStr = '';
+                if (q.reset_time) {
+                  const date = new Date(q.reset_time * 1000);
+                  resetStr = ` | Сброс: ${date.toLocaleTimeString('ru-RU')}`;
+                }
+                message += `• <b>${label}</b>: ${remaining}/${total} кредитов (исп: ${usage})${resetStr}\n`;
+              }
+            }
+          }
+        } catch (err) {
+          logger.warn(`Could not fetch Argon limits: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      await ctx.reply(message, { parse_mode: 'HTML' });
     } catch (error) {
       logger.error(`Error getting runtime info: ${error instanceof Error ? error.message : String(error)}`);
       await ctx.reply('❌ Не удалось получить информацию о лимитах.');

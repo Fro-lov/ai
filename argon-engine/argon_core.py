@@ -114,22 +114,22 @@ class ArgonCore:
             finally:
                 self.busy = False
 
-    async def run_autonomous_task(self, goal: str, max_iterations: int = 5) -> Dict[str, Any]:
+    async def run_autonomous_task(self, goal: str, max_iterations: int = 3) -> Dict[str, Any]:
         async with self.lock:
             if not self.client or not self.chat_session:
                 if not await self.init_client():
                     return {
                         "success": False,
                         "goal": goal,
-                        "report": "Сессия Gemini 4 Argon не активна. Требуется авторизация.",
+                        "report": "Сессия Gemini 4 Argon не активна. Требуется авторизация через /cookies.",
                         "error": "Auth session expired"
                     }
 
             self.busy = True
             try:
-                # Начинаем чистую ветку диалога для задачи
+                # Начинаем чистую изолированную ветку диалога для каждой задачи (экономия квоты)
                 task_chat = self.client.start_chat()
-                initial_prompt = f"{SYSTEM_AGENT_PROMPT}\n\nЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:\n{goal}\n\nПриступай к выполнению."
+                initial_prompt = f"{SYSTEM_AGENT_PROMPT}\n\nЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:\n{goal}\n\nПриступай к выполнению (у тебя максимум {max_iterations} шага)."
                 
                 current_response_text = ""
                 iteration_logs = []
@@ -167,7 +167,7 @@ class ArgonCore:
                         step_observations.append(f"[Observation cmd '{cmd}']:\n{cmd_res}")
 
                     if not actions_found:
-                        # Агент не вызвал новых действий — значит, задача завершена
+                        # Агент завершил задачу без вызова новых действий
                         return {
                             "success": True,
                             "goal": goal,
@@ -179,13 +179,19 @@ class ArgonCore:
                     # Формируем ответ наблюдений для следующего шага
                     obs_text = "\n\n".join(step_observations)
                     iteration_logs.append(f"--- Итерация {iteration} ---\n{obs_text}")
-                    current_response_text = f"Результаты выполнения действий:\n{obs_text}\n\nПроанализируй результат и продолжай решение задачи либо дай финальный отчет."
+                    current_response_text = f"Результаты выполнения действий:\n{obs_text}\n\nПроанализируй результат и заверши решение задачи либо дай финальный отчет."
 
-                # Достигли лимита итераций
+                # Достигли лимита итераций (защита квоты от бесконечного цикла)
+                last_log = iteration_logs[-1] if iteration_logs else "Нет логов выполнения"
                 return {
-                    "success": True,
+                    "success": False,
                     "goal": goal,
-                    "report": f"Достигнут лимит в {max_iterations} итераций.\nПоследний вывод модели:\n{raw_text}",
+                    "report": (
+                        f"⚠️ <b>Агент остановлен:</b> исчерпан защитный лимит в {max_iterations} шага(ов), чтобы предотвратить бесконечный цикл и сберечь квоту Argon.\n\n"
+                        f"<b>Последние логи действий:</b>\n<pre>{last_log[:1500]}</pre>\n\n"
+                        f"<b>Вывод модели:</b>\n{raw_text[:1000]}\n\n"
+                        f"💡 <i>Рекомендация: уточните задачу или устраните ошибку вручную.</i>"
+                    ),
                     "iterations": max_iterations,
                     "logs": iteration_logs
                 }

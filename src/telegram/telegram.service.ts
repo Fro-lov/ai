@@ -317,10 +317,11 @@ export class TelegramService {
       const result = await this.argonProvider.runAutonomousTask(task);
 
       if (result.success) {
-        const report = `✅ <b>Задача выполнена успешно!</b>\n\n<b>Отчет агента:</b>\n${result.report}`;
+        const report = `✅ <b>Задача выполнена успешно!</b>\n\n${result.report}\n\n💡 <i>Совет: используйте /reset для очистки сессии перед следующей задачей (экономит квоту).</i>`;
         await this.sendLongMessage(ctx, report);
       } else {
-        await ctx.reply(`❌ <b>Ошибка выполнения:</b>\n${result.error || 'Неизвестная ошибка'}`, { parse_mode: 'HTML' });
+        const errReport = result.report || `❌ <b>Ошибка выполнения:</b>\n${result.error || 'Неизвестная ошибка'}`;
+        await this.sendLongMessage(ctx, errReport);
       }
     } catch (err) {
       logger.error(`Error in /argon command: ${err instanceof Error ? err.message : String(err)}`);

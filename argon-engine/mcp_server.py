@@ -22,8 +22,12 @@ core = ArgonCore()
 @mcp.tool()
 async def ask_argon(task: str, context_files: List[str] = []) -> str:
     """
-    Отправляет архитектурную или кодинговую задачу напрямую в сессию Gemini 4 Argon.
-    Позволяет приложить содержимое файлов из /workspace для контекста.
+    Отправляет сложную архитектурную или кодинговую задачу напрямую в сессию Gemini 4 Argon.
+    
+    ПРАВИЛО ЭКОНОМИИ КВОТЫ (Flash — руки, Argon — мозг):
+    Базовый агент в Antigravity (Flash) должен сам найти нужные файлы и лог ошибки,
+    и передать в context_files ТОЛЬКО 1-2 ключевых файла (не больше!), задав конкретный вопрос.
+    Не заставляй Argon искать файлы или анализировать весь проект целиком!
     """
     context_text = ""
     if context_files:
@@ -40,22 +44,24 @@ async def ask_argon(task: str, context_files: List[str] = []) -> str:
 @mcp.tool()
 async def argon_autonomous_task(goal: str) -> str:
     """
-    Запускает полный автономный цикл агента (ReAct loop) прямо на сервере в папке /workspace.
-    Агент может читать файлы, создавать код и запускать shell/git команды, после чего вернет готовый отчет.
+    Запускает автономный цикл агента на сервере в папке /workspace с жестким лимитом в 3 шага (защита от бесконечных циклов).
+    Если за 3 шага сборка или задача не решена, агент прерывается и возвращает детальный лог ошибки.
     """
-    result = await core.run_autonomous_task(goal, max_iterations=5)
+    result = await core.run_autonomous_task(goal, max_iterations=3)
     if result["success"]:
         return f"✅ Задача успешно выполнена за {result.get('iterations', 1)} шаг(ов):\n\n{result['report']}"
     else:
-        return f"❌ Ошибка выполнения задачи: {result.get('error', 'Неизвестная ошибка')}\nОтчет: {result.get('report', '')}"
+        return f"❌ Ошибка / прерывание цикла: {result.get('error', 'Лимит шагов исчерпан')}\nОтчет: {result.get('report', '')}"
 
 @mcp.tool()
 async def reset_argon_context() -> str:
     """
-    Очищает историю текущего диалога с Gemini 4 Argon.
+    Очищает контекст диалога с Gemini 4 Argon.
+    ВАЖНО: Вызывай после каждой завершенной фичи или исправленного бага!
+    Чистая сессия расходует в 5-10 раз меньше квоты, чем длинный диалог.
     """
     await core.reset_session()
-    return "✅ История сессии Gemini 4 Argon успешно очищена."
+    return "✅ Контекст сессии Gemini 4 Argon успешно сброшен."
 
 if __name__ == "__main__":
     # Запуск MCP через stdio (идеально для SSH подключения из Antigravity)

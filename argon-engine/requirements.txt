@@ -1,6 +1,6 @@
 fastapi>=0.110.0
 uvicorn>=0.28.0
 pydantic>=2.0.0
-gemini-webapi>=1.4.0
-mcp>=1.0.0
+gemini-webapi>=1.0.0
+mcp<2
 python-dotenv>=1.0.0

@@ -3,6 +3,9 @@ import os
 import sys
 from pathlib import Path
 from typing import List
+from dotenv import load_dotenv
+
+load_dotenv("/opt/argon-engine/.env")
 
 try:
     from mcp.server.fastmcp import FastMCP

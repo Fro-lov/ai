@@ -567,8 +567,11 @@ export class TelegramService {
     await this.bot.api.setMyCommands([
       { command: 'start', description: 'Начать работу' },
       { command: 'help', description: 'Список команд' },
-      { command: 'status', description: 'Состояние системы' },
-      { command: 'reset', description: 'Очистить историю' },
+      { command: 'status', description: 'Состояние хаба и сессий' },
+      { command: 'model', description: 'Переключить модель (groq/argon)' },
+      { command: 'argon', description: 'Запустить агента в /workspace' },
+      { command: 'cookies', description: 'Обновить куки Gemini 4' },
+      { command: 'reset', description: 'Очистить историю диалога' },
       { command: 'context', description: 'Информация о диалоге' },
       { command: 'limits', description: 'Лимиты AI' },
       { command: 'history', description: 'Показать историю' },

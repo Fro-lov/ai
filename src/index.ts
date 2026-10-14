@@ -14,7 +14,7 @@ import { chatRoute } from './routes/chat.route';
 import { MemoryConversationStore } from './conversation/memory.store';
 import { ConversationService } from './conversation/conversation.service';
 import { AIService } from './ai/ai.service';
-import { GroqProvider } from './ai';
+import { GroqProvider, ArgonProvider } from './ai';
 import { ChatService } from './chat/chat.service';
 import { TelegramService } from './telegram/telegram.service';
 import { PromptService } from './prompts/prompt.service';
@@ -35,7 +35,8 @@ async function buildServer() {
   await ragService.init();
 
   // Initialize AI services
-  const aiService = new AIService([new GroqProvider()], env.AI_DEFAULT_PROVIDER);
+  const argonProvider = new ArgonProvider();
+  const aiService = new AIService([new GroqProvider(), argonProvider], env.AI_DEFAULT_PROVIDER);
   const promptService = new PromptService();
   const chatService = new ChatService(aiService, promptService, ragService);
 
@@ -49,7 +50,14 @@ async function buildServer() {
   // Initialize Telegram bot if enabled
   let telegramService: TelegramService | null = null;
   if (env.TELEGRAM_ENABLED === 'true' && env.TELEGRAM_BOT_TOKEN) {
-    telegramService = new TelegramService(conversationService, chatService, promptService, aiService);
+    telegramService = new TelegramService(
+      conversationService,
+      chatService,
+      promptService,
+      aiService,
+      undefined,
+      argonProvider
+    );
   }
 
   await fastify.register(healthRoute);

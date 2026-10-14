@@ -18,6 +18,9 @@ const envSchema = z.object({
   AI_PROJECT_PROMPT_ONTER_AI: z.string().optional(),
   AI_PROJECT_PROMPT_MINECRAFT: z.string().optional(),
   AI_PROJECT_PROMPT_SCRAP_EVOLUTION: z.string().optional(),
+  ADMIN_TELEGRAM_IDS: z.string().default(''),
+  ARGON_ENGINE_URL: z.string().default('http://127.0.0.1:8085'),
+  ARGON_SECRET_TOKEN: z.string().default('onter_argon_secret_2026'),
 });
 
 type Env = z.infer<typeof envSchema>;

@@ -7,6 +7,7 @@ import { FormatterService, formatterService as defaultFormatterService } from '.
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { TelegramMessageContext } from './telegram.types';
+import { ArgonProvider } from '../ai';
 
 export class TelegramService {
   private bot: Bot;
@@ -15,13 +16,16 @@ export class TelegramService {
   private promptService: PromptService;
   private aiService: AIService;
   private formatterService: FormatterService;
+  private argonProvider?: ArgonProvider;
+  private userSelectedProvider: Map<number, string> = new Map();
 
   constructor(
     conversationService: ConversationService,
     chatService: ChatService,
     promptService: PromptService,
     aiService: AIService,
-    formatterService: FormatterService = defaultFormatterService
+    formatterService: FormatterService = defaultFormatterService,
+    argonProvider?: ArgonProvider
   ) {
     this.bot = new Bot(env.TELEGRAM_BOT_TOKEN!);
     this.conversationService = conversationService;
@@ -29,8 +33,18 @@ export class TelegramService {
     this.promptService = promptService;
     this.aiService = aiService;
     this.formatterService = formatterService;
+    this.argonProvider = argonProvider;
 
     this.setupHandlers();
+  }
+
+  public isAdmin(userId?: number): boolean {
+    if (!userId) return false;
+    const adminList = (env.ADMIN_TELEGRAM_IDS || '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(Boolean);
+    return adminList.includes(userId.toString());
   }
 
   private setupHandlers(): void {
@@ -41,6 +55,10 @@ export class TelegramService {
     this.bot.command('context', this.handleContext.bind(this));
     this.bot.command('limits', this.handleLimits.bind(this));
     this.bot.command('history', this.handleHistory.bind(this));
+    this.bot.command('status', this.handleStatus.bind(this));
+    this.bot.command('argon', this.handleArgon.bind(this));
+    this.bot.command('cookies', this.handleCookies.bind(this));
+    this.bot.command('model', this.handleModel.bind(this));
 
     // Handle text messages
     this.bot.on('message:text', async (ctx, next) => {
@@ -200,22 +218,34 @@ export class TelegramService {
 
   private async handleReset(ctx: Context): Promise<void> {
     const chatId = ctx.chat?.id;
+    const userId = ctx.from?.id;
     if (!chatId) return;
 
     logger.info(`Telegram /reset command from chat: ${chatId}`);
     const conversationId = this.getConversationId(chatId);
     this.conversationService.reset(conversationId);
+
+    if (this.isAdmin(userId) && this.argonProvider) {
+      try {
+        await this.argonProvider.resetSession();
+      } catch (err) {
+        logger.warn(`Could not reset Argon Engine session: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     await ctx.reply('🔄 История диалога очищена.');
   }
 
   private async handleContext(ctx: Context): Promise<void> {
     const chatId = ctx.chat?.id;
+    const userId = ctx.from?.id;
     if (!chatId) return;
 
     logger.info(`Telegram /context command from chat: ${chatId}`);
     const conversationId = this.getConversationId(chatId);
     const info = this.conversationService.getConversationInfo(conversationId);
     const chatType = ctx.chat?.type || 'unknown';
+    const activeProvider = (userId && this.isAdmin(userId) && this.userSelectedProvider.get(userId)) || env.AI_DEFAULT_PROVIDER;
 
     const message = `
 📊 Информация о диалоге:
@@ -223,8 +253,8 @@ export class TelegramService {
 • Тип чата: ${chatType}
 • Сообщений: ${info.messageCount}
 • Лимит истории: ${info.historyLimit}
-• Provider: ${env.AI_DEFAULT_PROVIDER}
-• Model: ${env.GROQ_MODEL}
+• Активный Provider: ${activeProvider}
+• Модель по умолчанию: ${env.GROQ_MODEL}
 • Max tokens: ${env.AI_MAX_TOKENS}
     `.trim();
 
@@ -233,21 +263,151 @@ export class TelegramService {
 
   private async handleHelp(ctx: Context): Promise<void> {
     const chatId = ctx.chat?.id;
+    const userId = ctx.from?.id;
     if (!chatId) return;
 
     logger.info(`Telegram /help command from chat: ${chatId}`);
 
-    const message = `
-📚 Доступные команды:
+    let message = `
+📚 <b>Доступные команды:</b>
 
 /start - Начать работу и узнать как взаимодействовать
 /help - Показать список команд
 /reset - Очистить историю диалога
 /context - Показать информацию о текущем диалоге
 /limits - Показать информацию о лимитах AI
+/history - Показать недавнюю историю
     `.trim();
 
-    await ctx.reply(message);
+    if (this.isAdmin(userId)) {
+      message += `\n\n⚡ <b>Команды Администратора (Argon Hub):</b>
+/argon &lt;задача&gt; - Запуск автономного агента в /workspace
+/status - Проверка состояния сервера и сессии Gemini 4
+/model &lt;groq|argon&gt; - Переключение модели диалога
+/cookies &lt;1PSID&gt; &lt;1PSIDTS&gt; - Горячее обновление кук веб-сессии`;
+    }
+
+    await ctx.reply(message, { parse_mode: 'HTML' });
+  }
+
+  private async handleArgon(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!this.isAdmin(userId)) {
+      await ctx.reply('⛔ Доступ ограничен. Модель Gemini 4 Argon и автономный агент доступны исключительно администраторам.');
+      return;
+    }
+
+    const messageText = ctx.message?.text || '';
+    const task = messageText.replace(/^\/argon(@\w+)?/i, '').trim();
+
+    if (!task) {
+      await ctx.reply('ℹ️ Использование: `/argon <описание задачи>`\n\nПример:\n`/argon создай в директории скрипт healthcheck.sh и проверь его запуск`');
+      return;
+    }
+
+    if (!this.argonProvider) {
+      await ctx.reply('⚠️ Сервис Argon Engine не инициализирован или недоступен.');
+      return;
+    }
+
+    const statusMsg = await ctx.reply('⚙️ <b>[Argon Bridge]</b> Запуск автономного ReAct-агента...', { parse_mode: 'HTML' });
+
+    try {
+      await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
+      const result = await this.argonProvider.runAutonomousTask(task);
+
+      if (result.success) {
+        const report = `✅ <b>Задача выполнена успешно!</b>\n\n<b>Отчет агента:</b>\n${result.report}`;
+        await this.sendLongMessage(ctx, report);
+      } else {
+        await ctx.reply(`❌ <b>Ошибка выполнения:</b>\n${result.error || 'Неизвестная ошибка'}`, { parse_mode: 'HTML' });
+      }
+    } catch (err) {
+      logger.error(`Error in /argon command: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply(`❌ Сбой связи с Argon Engine: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch {
+        // ignore delete failure
+      }
+    }
+  }
+
+  private async handleCookies(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!this.isAdmin(userId)) {
+      await ctx.reply('⛔ Доступ ограничен администраторами.');
+      return;
+    }
+
+    const text = ctx.message?.text || '';
+    const parts = text.replace(/^\/cookies(@\w+)?/i, '').trim().split(/\s+/);
+
+    if (parts.length < 2 || !parts[0] || !parts[1]) {
+      await ctx.reply('ℹ️ Использование: `/cookies <__Secure-1PSID> <__Secure-1PSIDTS>`');
+      return;
+    }
+
+    if (!this.argonProvider) {
+      await ctx.reply('⚠️ Сервис Argon Engine не инициализирован.');
+      return;
+    }
+
+    try {
+      const res = await this.argonProvider.updateCookies(parts[0], parts[1]);
+      await ctx.reply(`✅ <b>Сессия обновлена:</b> ${res.message}`, { parse_mode: 'HTML' });
+    } catch (err) {
+      await ctx.reply(`❌ Ошибка обновления куки: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async handleStatus(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    const isAdminUser = this.isAdmin(userId);
+
+    let message = `📊 <b>Статус платформы Onter AI:</b>\n• Бот: Онлайн\n• Базовый провайдер: ${env.AI_DEFAULT_PROVIDER} (${env.GROQ_MODEL})\n`;
+
+    if (isAdminUser && this.argonProvider) {
+      try {
+        const status = await this.argonProvider.getEngineStatus();
+        message += `\n⚡ <b>Argon Hub (Сервер Oracle):</b>\n`;
+        message += `• Сессия Gemini 4: ${status.sessionActive ? '🟢 Активна' : '🔴 Не авторизована'}\n`;
+        message += `• Очередь задач: ${status.busy ? '⏳ Занята' : '🟢 Свободна'}\n`;
+        message += `• Свободное место на диске: ${status.freeDiskGb} GB\n`;
+        message += `• Аптайм: ${Math.round(status.uptimeSeconds / 60)} мин.\n`;
+      } catch (err) {
+        message += `\n⚠️ <i>Argon Engine локально недоступен (${err instanceof Error ? err.message : String(err)})</i>\n`;
+      }
+    } else {
+      message += `• Доступный режим: Пользовательский диалог`;
+    }
+
+    await ctx.reply(message, { parse_mode: 'HTML' });
+  }
+
+  private async handleModel(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!this.isAdmin(userId) || !userId) {
+      await ctx.reply('ℹ️ Для пользователей по умолчанию установлена быстрая модель Groq (Llama-3.1). Переключение моделей доступно только администраторам.');
+      return;
+    }
+
+    const text = ctx.message?.text || '';
+    const arg = text.replace(/^\/model(@\w+)?/i, '').trim().toLowerCase();
+
+    if (!arg) {
+      const current = this.userSelectedProvider.get(userId) || env.AI_DEFAULT_PROVIDER;
+      await ctx.reply(`ℹ️ Текущий провайдер: <b>${current}</b>\n\nИспользование: <code>/model groq</code> или <code>/model argon</code>`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    if (arg === 'argon' || arg === 'groq') {
+      this.userSelectedProvider.set(userId, arg);
+      await ctx.reply(`✅ Модель переключена на: <b>${arg === 'argon' ? 'Gemini 4 Argon' : 'Groq Llama-3.1'}</b>`, { parse_mode: 'HTML' });
+    } else {
+      await ctx.reply('⚠️ Недопустимый провайдер. Допустимые значения: `groq`, `argon`');
+    }
   }
 
   private async handleLimits(ctx: Context): Promise<void> {
@@ -357,10 +517,17 @@ export class TelegramService {
         projectId: undefined,
       });
 
+      // Determine provider: admin can use argon if selected, otherwise fallback/regular users always groq
+      const isUserAdmin = this.isAdmin(context.userId);
+      const selectedProvider = isUserAdmin
+        ? (this.userSelectedProvider.get(context.userId) || env.AI_DEFAULT_PROVIDER)
+        : env.AI_DEFAULT_PROVIDER;
+
       // Get AI response with conversation history
       const response = await this.chatService.chat({
         message: cleanedText,
         messages: aiMessages,
+        provider: selectedProvider,
       });
 
       // Add assistant message to conversation
@@ -400,6 +567,7 @@ export class TelegramService {
     await this.bot.api.setMyCommands([
       { command: 'start', description: 'Начать работу' },
       { command: 'help', description: 'Список команд' },
+      { command: 'status', description: 'Состояние системы' },
       { command: 'reset', description: 'Очистить историю' },
       { command: 'context', description: 'Информация о диалоге' },
       { command: 'limits', description: 'Лимиты AI' },

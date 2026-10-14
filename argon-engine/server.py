@@ -1,0 +1,79 @@
+import os
+import uvicorn
+from fastapi import FastAPI, Header, HTTPException, Depends, status
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+
+from argon_core import ArgonCore
+
+SECRET_TOKEN = os.environ.get("ARGON_SECRET_TOKEN", "onter_argon_secret_2026")
+
+app = FastAPI(title="Argon Engine API Gateway", version="1.0.0")
+core = ArgonCore()
+
+async def verify_token(authorization: Optional[str] = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization header")
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer" or parts[1] != SECRET_TOKEN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+    author: Optional[str] = None
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    max_tokens: Optional[int] = None
+
+class TaskRequest(BaseModel):
+    goal: str
+    max_iterations: Optional[int] = 5
+
+class CookiesRequest(BaseModel):
+    secure_1psid: str
+    secure_1psidts: str
+
+@app.on_event("startup")
+async def on_startup():
+    print("[SERVER] Starting Argon Engine server on 127.0.0.1:8085...")
+    await core.init_client()
+
+@app.get("/api/status", dependencies=[Depends(verify_token)])
+async def get_status():
+    return core.get_status()
+
+@app.post("/api/chat", dependencies=[Depends(verify_token)])
+async def chat_endpoint(req: ChatRequest):
+    # Извлекаем последнее пользовательское сообщение или форматируем цепочку
+    last_user_msg = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
+    if not last_user_msg:
+        raise HTTPException(status_code=400, detail="No user message provided")
+    
+    reply = await core.chat(last_user_msg)
+    return {
+        "content": reply,
+        "model": "Gemini 4 Argon (Web Session)"
+    }
+
+@app.post("/api/agent/task", dependencies=[Depends(verify_token)])
+async def agent_task_endpoint(req: TaskRequest):
+    result = await core.run_autonomous_task(req.goal, max_iterations=req.max_iterations or 5)
+    return result
+
+@app.post("/api/cookies", dependencies=[Depends(verify_token)])
+async def update_cookies_endpoint(req: CookiesRequest):
+    success = await core.update_cookies(req.secure_1psid, req.secure_1psidts)
+    if success:
+        return {"success": True, "message": "Куки успешно обновлены и сессия активна."}
+    else:
+        return {"success": False, "message": "Куки сохранены, но не удалось инициализировать сессию. Проверьте валидность токенов."}
+
+@app.post("/api/reset", dependencies=[Depends(verify_token)])
+async def reset_endpoint():
+    await core.reset_session()
+    return {"success": True, "message": "Контекст диалога сброшен."}
+
+if __name__ == "__main__":
+    uvicorn.run("server:app", host="127.0.0.1", port=8085, log_level="info")

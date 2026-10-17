@@ -1,4 +1,5 @@
-import { Bot, Context } from 'grammy';
+import path from 'path';
+import { Bot, Context, InputFile } from 'grammy';
 import { ConversationService } from '../conversation/conversation.service';
 import { ChatService } from '../chat/chat.service';
 import { AIService } from '../ai/ai.service';
@@ -59,6 +60,7 @@ export class TelegramService {
     this.bot.command('argon', this.handleArgon.bind(this));
     this.bot.command('cookies', this.handleCookies.bind(this));
     this.bot.command('model', this.handleModel.bind(this));
+    this.bot.command('getfile', this.handleGetFile.bind(this));
 
     // Handle text messages
     this.bot.on('message:text', async (ctx, next) => {
@@ -282,6 +284,7 @@ export class TelegramService {
     if (this.isAdmin(userId)) {
       message += `\n\n⚡ <b>Команды Администратора (Argon Hub):</b>
 /argon &lt;задача&gt; - Запуск автономного агента в /workspace
+/getfile &lt;путь&gt; - Скачать файл из /workspace в Telegram
 /status - Проверка состояния сервера и сессии Gemini 4
 /model &lt;groq|argon&gt; - Переключение модели диалога
 /cookies &lt;1PSID&gt; &lt;1PSIDTS&gt; - Горячее обновление кук веб-сессии`;
@@ -323,6 +326,24 @@ export class TelegramService {
         const errReport = result.report || `❌ <b>Ошибка выполнения:</b>\n${result.error || 'Неизвестная ошибка'}`;
         await this.sendLongMessage(ctx, errReport);
       }
+
+      // Отправка сгенерированных агентом файлов в Telegram
+      if (result.files && result.files.length > 0) {
+        for (const fileInfo of result.files) {
+          try {
+            await ctx.api.sendChatAction(ctx.chat!.id, 'upload_document');
+            const buffer = await this.argonProvider.downloadWorkspaceFile(fileInfo.path);
+            const filename = fileInfo.filename || path.basename(fileInfo.path);
+            await ctx.replyWithDocument(new InputFile(buffer, filename), {
+              caption: fileInfo.caption || `📄 Файл: <code>${fileInfo.path}</code>`,
+              parse_mode: 'HTML',
+            });
+          } catch (fileErr) {
+            logger.error(`Error sending generated file '${fileInfo.path}': ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`);
+            await ctx.reply(`⚠️ Не удалось передать файл <code>${fileInfo.path}</code>: ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`, { parse_mode: 'HTML' });
+          }
+        }
+      }
     } catch (err) {
       logger.error(`Error in /argon command: ${err instanceof Error ? err.message : String(err)}`);
       await ctx.reply(`❌ Сбой связи с Argon Engine: ${err instanceof Error ? err.message : String(err)}`);
@@ -332,6 +353,40 @@ export class TelegramService {
       } catch {
         // ignore delete failure
       }
+    }
+  }
+
+  private async handleGetFile(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!this.isAdmin(userId)) {
+      await ctx.reply('⛔ Доступ ограничен администраторами.');
+      return;
+    }
+
+    const text = ctx.message?.text || '';
+    const filePath = text.replace(/^\/getfile(@\w+)?/i, '').trim();
+
+    if (!filePath) {
+      await ctx.reply('ℹ️ Использование: `/getfile <относительный путь в /workspace>`\n\nПример: `/getfile script.py` или `/getfile build/report.json`');
+      return;
+    }
+
+    if (!this.argonProvider) {
+      await ctx.reply('⚠️ Сервис Argon Engine не инициализирован.');
+      return;
+    }
+
+    try {
+      await ctx.api.sendChatAction(ctx.chat!.id, 'upload_document');
+      const buffer = await this.argonProvider.downloadWorkspaceFile(filePath);
+      const filename = path.basename(filePath);
+      await ctx.replyWithDocument(new InputFile(buffer, filename), {
+        caption: `📄 Файл из /workspace: <code>${filePath}</code>`,
+        parse_mode: 'HTML',
+      });
+    } catch (err) {
+      logger.error(`Error downloading file '${filePath}': ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply(`❌ Не удалось скачать файл <code>${filePath}</code>: ${err instanceof Error ? err.message : String(err)}`, { parse_mode: 'HTML' });
     }
   }
 
@@ -418,51 +473,96 @@ export class TelegramService {
     logger.info(`Telegram /limits command from chat: ${chatId}`);
 
     try {
-      const runtimeInfo = this.aiService.getRuntimeInfo();
-      const rateLimit = runtimeInfo.rateLimit;
+      let message = `📈 <b>Информация о лимитах нейросетей:</b>\n`;
 
-      let message = `
-📈 <b>Информация о лимитах:</b>
-• Provider: ${runtimeInfo.provider}
-• Model: ${runtimeInfo.model}
-      `.trim();
+      // 1. Лимиты Groq (Llama-3.1)
+      try {
+        const groqLimits = await this.aiService.getProviderLimits('groq');
+        message += `\n🦙 <b>Провайдер Groq (${env.GROQ_MODEL}):</b>\n`;
 
-      if (rateLimit) {
-        message += `\n\n📊 <b>Rate Limit (Groq):</b>
-• Remaining requests: ${rateLimit.remainingRequests || 'недоступно'}
-• Remaining tokens: ${rateLimit.remainingTokens || 'недоступно'}
-• Reset requests: ${rateLimit.resetRequests || 'недоступно'}
-• Reset tokens: ${rateLimit.resetTokens || 'недоступно'}`;
+        if (groqLimits && (groqLimits.remainingRequests !== undefined || groqLimits.remainingTokens !== undefined)) {
+          const remReq = groqLimits.remainingRequests ?? '∞';
+          const limReq = groqLimits.limitRequests ? ` / ${groqLimits.limitRequests}` : '';
+          const remTok = groqLimits.remainingTokens ?? '∞';
+          const limTok = groqLimits.limitTokens ? ` / ${groqLimits.limitTokens}` : '';
+          const resReq = groqLimits.resetRequests ? ` (сброс: ${groqLimits.resetRequests})` : '';
+          const resTok = groqLimits.resetTokens ? ` (сброс: ${groqLimits.resetTokens})` : '';
+
+          message += `• Запросы (RPM): <b>${remReq}${limReq}</b>${resReq}\n`;
+          message += `• Токены (TPM): <b>${remTok}${limTok}</b>${resTok}\n`;
+        } else {
+          message += `• Статус: Активен (запросов в текущем окне пока не зафиксировано)\n`;
+        }
+      } catch (groqErr) {
+        logger.warn(`Could not fetch Groq limits: ${groqErr instanceof Error ? groqErr.message : String(groqErr)}`);
+        message += `\n🦙 <b>Провайдер Groq:</b> статус онлайн\n`;
       }
 
+      // 2. Лимиты Gemini 4 Argon (для администратора)
       const userId = ctx.from?.id;
       if (this.isAdmin(userId) && this.argonProvider) {
         try {
           const argonLimits = await this.argonProvider.getLimits();
-          if (argonLimits && argonLimits.quotas && Object.keys(argonLimits.quotas).length > 0) {
-            message += `\n\n⚡ <b>Квоты Gemini 4 Argon (Web Session):</b>\n`;
-            for (const [key, q] of Object.entries(argonLimits.quotas)) {
-              if (typeof q === 'object' && q !== null) {
-                const label = q.label || key;
-                if (label === 'default') continue;
-                const remaining = q.remaining !== undefined ? q.remaining : '∞';
-                const total = q.total !== undefined ? q.total : '∞';
-                const usage = q.usage_percentage !== undefined ? `${q.usage_percentage}%` : '0%';
-                let resetStr = '';
-                if (q.reset_time) {
-                  const date = new Date(q.reset_time * 1000);
-                  resetStr = ` | Сброс: ${date.toLocaleTimeString('ru-RU')}`;
-                }
-                message += `• <b>${label}</b>: ${remaining}/${total} кредитов (исп: ${usage})${resetStr}\n`;
+          const quotas = argonLimits?.quotas || {};
+
+          message += `\n⚡ <b>Квоты Gemini 4 Argon (Web Session):</b>\n`;
+
+          // Общая информация о подписке (Tier & Windows)
+          if (quotas.usage_info) {
+            const ui = quotas.usage_info;
+            const tierName = ui.tier?.label || 'PRO';
+            message += `• Тариф Google: <b>${tierName}</b>\n`;
+
+            if (ui.current_5h) {
+              const c5 = ui.current_5h;
+              let resetStr = '';
+              if (c5.reset_at) {
+                const d = new Date(c5.reset_at);
+                resetStr = ` | Сброс: ${d.toLocaleTimeString('ru-RU')}`;
               }
+              message += `• <b>Окно 5 часов:</b> ${c5.remaining_credits ?? '∞'} кредитов (исп: ${c5.usage_percentage ?? 0}%)${resetStr}\n`;
+            }
+
+            if (ui.weekly) {
+              const w = ui.weekly;
+              let resetStr = '';
+              if (w.reset_at) {
+                const d = new Date(w.reset_at);
+                resetStr = ` | Сброс: ${d.toLocaleDateString('ru-RU')} ${d.toLocaleTimeString('ru-RU')}`;
+              }
+              message += `• <b>Недельный лимит:</b> ${w.remaining_credits ?? '∞'} кредитов (исп: ${w.usage_percentage ?? 0}%)${resetStr}\n`;
             }
           }
-        } catch (err) {
-          logger.warn(`Could not fetch Argon limits: ${err instanceof Error ? err.message : String(err)}`);
+
+          // Статистика конкретных моделей
+          for (const [key, q] of Object.entries(quotas)) {
+            if (key === 'usage_info' || key === 'extra') continue;
+            if (typeof q === 'object' && q !== null) {
+              const rawLabel = (q as any).label || key;
+              let modelName = rawLabel.replace(/\s*\[.*?\]/g, '').trim();
+              if (modelName === 'default') continue;
+              if (modelName.toLowerCase().includes('pro')) modelName = 'Gemini Pro (Argon Core)';
+              if (modelName.toLowerCase().includes('flash')) modelName = 'Gemini Flash';
+
+              const remaining = (q as any).remaining !== undefined ? (q as any).remaining : '∞';
+              const total = (q as any).total !== undefined ? (q as any).total : '∞';
+              const usage = (q as any).usage_percentage !== undefined ? `${(q as any).usage_percentage}%` : '0%';
+              message += `• <b>${modelName}</b>: ${remaining}/${total} кредитов (исп: ${usage})\n`;
+            }
+          }
+
+          // Проверка блокировок
+          if (quotas.extra?.default) {
+            const isBlocked = quotas.extra.default.is_blocked;
+            message += `• Статус аккаунта: ${isBlocked ? '⚠️ <b>Есть ограничения</b>' : '✅ <b>Чистый (без ограничений)</b>'}\n`;
+          }
+        } catch (argonErr) {
+          logger.warn(`Could not fetch Argon limits: ${argonErr instanceof Error ? argonErr.message : String(argonErr)}`);
+          message += `\n⚠️ Не удалось опросить сервис Argon Engine: ${argonErr instanceof Error ? argonErr.message : String(argonErr)}\n`;
         }
       }
 
-      await ctx.reply(message, { parse_mode: 'HTML' });
+      await ctx.reply(message.trim(), { parse_mode: 'HTML' });
     } catch (error) {
       logger.error(`Error getting runtime info: ${error instanceof Error ? error.message : String(error)}`);
       await ctx.reply('❌ Не удалось получить информацию о лимитах.');
@@ -593,6 +693,7 @@ export class TelegramService {
       { command: 'status', description: 'Состояние хаба и сессий' },
       { command: 'model', description: 'Переключить модель (groq/argon)' },
       { command: 'argon', description: 'Запустить агента в /workspace' },
+      { command: 'getfile', description: 'Скачать файл из /workspace' },
       { command: 'cookies', description: 'Обновить куки Gemini 4' },
       { command: 'reset', description: 'Очистить историю диалога' },
       { command: 'context', description: 'Информация о диалоге' },

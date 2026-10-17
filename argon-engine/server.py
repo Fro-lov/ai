@@ -1,6 +1,7 @@
 import os
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Depends, status
+from fastapi import FastAPI, Header, HTTPException, Depends, status, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
@@ -66,6 +67,18 @@ async def chat_endpoint(req: ChatRequest):
 async def agent_task_endpoint(req: TaskRequest):
     result = await core.run_autonomous_task(req.goal, max_iterations=req.max_iterations or 5)
     return result
+
+@app.get("/api/workspace/file", dependencies=[Depends(verify_token)])
+async def get_workspace_file(path: str = Query(..., description="Relative path in /workspace")):
+    try:
+        safe_path = core.executor._resolve_safe_path(path)
+        if not safe_path.exists() or not safe_path.is_file():
+            raise HTTPException(status_code=404, detail=f"File '{path}' not found in workspace")
+        return FileResponse(path=str(safe_path), filename=safe_path.name)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/cookies", dependencies=[Depends(verify_token)])
 async def update_cookies_endpoint(req: CookiesRequest):

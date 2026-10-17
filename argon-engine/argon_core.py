@@ -28,9 +28,13 @@ SYSTEM_AGENT_PROMPT = """Ты — автономный серверный ИИ-�
 3. Выполнение shell-команды в /workspace:
    <cmd>bash command here</cmd>
 
+4. Отправка файла пользователю в Telegram / чат:
+   <send_file path="rel/path/to/file.txt" caption="Краткое описание"/>
+
 ПРАВИЛА И ПРИНЦИПЫ:
 - Действуй по методологии ReAct: Рассуждение (Thought) -> Действие (Action с тегом) -> Анализ результата (Observation).
 - Если для выполнения задачи нужно сначала посмотреть структуру папок, начни с команды `<cmd>ls -la</cmd>`.
+- Если тебя попросили создать файл, скрипт или отчет и прислать его — запиши файл через `<write>` или собери через `<cmd>`, а затем вызови `<send_file path="..." caption="..."/>` перед финальным отчетом.
 - Все пути указывай относительно `/workspace`. Выход за пределы песочницы заблокирован.
 - Выполняй команды аккуратно и последовательно. Не запускай интерактивные команды, требующие ручного ввода (например, используй `apt -y` или `npm install --yes`).
 - Когда задача полностью решена, предоставь четкий, структурированный отчет на русском языке БЕЗ вызова новых тегов действий.
@@ -133,6 +137,7 @@ class ArgonCore:
                 
                 current_response_text = ""
                 iteration_logs = []
+                sent_files = []
 
                 for iteration in range(1, max_iterations + 1):
                     prompt_to_send = initial_prompt if iteration == 1 else current_response_text
@@ -166,6 +171,25 @@ class ArgonCore:
                         cmd_res = await self.executor.execute_command(cmd)
                         step_observations.append(f"[Observation cmd '{cmd}']:\n{cmd_res}")
 
+                    # 4. Поиск <send_file path="..." caption="..."/>
+                    for match in re.finditer(r'<send_file\s+path=["\']([^"\']+)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/>', raw_text):
+                        actions_found = True
+                        rel_path = match.group(1).strip()
+                        caption = match.group(2) if match.group(2) else ""
+                        try:
+                            safe_path = self.executor._resolve_safe_path(rel_path)
+                            if safe_path.exists() and safe_path.is_file():
+                                sent_files.append({
+                                    "path": rel_path,
+                                    "filename": safe_path.name,
+                                    "caption": caption
+                                })
+                                step_observations.append(f"[Observation send_file '{rel_path}']: Файл '{safe_path.name}' успешно прикреплен к отправке.")
+                            else:
+                                step_observations.append(f"[Observation send_file '{rel_path}']: Ошибка — файл не найден на диске.")
+                        except Exception as e:
+                            step_observations.append(f"[Observation send_file '{rel_path}']: Ошибка доступа — {e}")
+
                     if not actions_found:
                         # Агент завершил задачу без вызова новых действий
                         return {
@@ -173,7 +197,8 @@ class ArgonCore:
                             "goal": goal,
                             "report": raw_text.strip(),
                             "iterations": iteration,
-                            "logs": iteration_logs
+                            "logs": iteration_logs,
+                            "files": sent_files
                         }
 
                     # Формируем ответ наблюдений для следующего шага
@@ -193,14 +218,16 @@ class ArgonCore:
                         f"💡 <i>Рекомендация: уточните задачу или устраните ошибку вручную.</i>"
                     ),
                     "iterations": max_iterations,
-                    "logs": iteration_logs
+                    "logs": iteration_logs,
+                    "files": sent_files
                 }
             except Exception as e:
                 return {
                     "success": False,
                     "goal": goal,
                     "report": f"Сбой ReAct-цикла: {e}",
-                    "error": str(e)
+                    "error": str(e),
+                    "files": sent_files if 'sent_files' in locals() else []
                 }
             finally:
                 self.busy = False

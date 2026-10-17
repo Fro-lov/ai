@@ -47,4 +47,12 @@ export class AIService {
     const provider = this.getProvider(this.defaultProvider);
     return provider.getRuntimeInfo();
   }
+
+  async getProviderLimits(providerName?: string): Promise<any> {
+    const provider = this.getProvider(providerName);
+    if (typeof provider.getLimits === 'function') {
+      return await provider.getLimits();
+    }
+    return provider.getRuntimeInfo().rateLimit;
+  }
 }

@@ -16,10 +16,12 @@ export interface AIChatResponse {
 }
 
 export interface RateLimitInfo {
-  remainingRequests?: number;
-  remainingTokens?: number;
-  resetRequests?: number;
-  resetTokens?: number;
+  remainingRequests?: number | string;
+  remainingTokens?: number | string;
+  resetRequests?: number | string;
+  resetTokens?: number | string;
+  limitRequests?: number | string;
+  limitTokens?: number | string;
 }
 
 export interface AIProviderRuntimeInfo {
@@ -32,4 +34,5 @@ export abstract class AIProvider {
   abstract readonly name: string;
   abstract chat(input: AIChatInput): Promise<AIChatResponse>;
   abstract getRuntimeInfo(): AIProviderRuntimeInfo;
+  getLimits?(): Promise<any>;
 }

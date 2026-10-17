@@ -8,6 +8,7 @@ export interface ArgonTaskResponse {
   report: string;
   iterations?: number;
   error?: string;
+  files?: Array<{ path: string; filename?: string; caption?: string }>;
 }
 
 export class ArgonProvider implements AIProvider {
@@ -154,6 +155,26 @@ export class ArgonProvider implements AIProvider {
     }
 
     return await response.json() as { quotas: Record<string, any> };
+  }
+
+  async downloadWorkspaceFile(relPath: string): Promise<Buffer> {
+    const url = `${this.baseUrl}/api/workspace/file?path=${encodeURIComponent(relPath)}`;
+    logger.info(`Downloading workspace file from Argon Engine: ${relPath}`);
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${this.secretToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to download workspace file '${relPath}' (${response.status}): ${err}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
   }
 
   getRuntimeInfo(): AIProviderRuntimeInfo {

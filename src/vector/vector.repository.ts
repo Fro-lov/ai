@@ -116,12 +116,15 @@ export class VectorRepository {
     }
   }
 
+  private memoryCache: ChunkRecord[] | null = null;
+
   /**
    * Clears existing chunks for a file or all chunks
    */
   async clearAll(): Promise<void> {
     if (this.useFallback || !this.pool) {
       this.ensureFallbackDir();
+      this.memoryCache = [];
       fs.writeFileSync(this.fallbackFilePath, JSON.stringify([]), 'utf-8');
       logger.info('Cleared local JSON vector storage.');
       return;
@@ -166,16 +169,29 @@ export class VectorRepository {
     this.ensureFallbackDir();
     const existing = this.loadFromFallback();
     const updated = [...existing, ...chunks];
-    fs.writeFileSync(this.fallbackFilePath, JSON.stringify(updated, null, 2), 'utf-8');
+    this.memoryCache = updated;
+    const tempPath = `${this.fallbackFilePath}.tmp`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(updated), 'utf-8');
+      fs.renameSync(tempPath, this.fallbackFilePath);
+    } catch {
+      // Fallback direct write if rename fails
+      fs.writeFileSync(this.fallbackFilePath, JSON.stringify(updated), 'utf-8');
+    }
     logger.info(`Saved ${chunks.length} chunks to local JSON (${this.fallbackFilePath}). Total: ${updated.length}`);
   }
 
   private loadFromFallback(): ChunkRecord[] {
+    if (this.memoryCache !== null) {
+      return this.memoryCache;
+    }
     this.ensureFallbackDir();
     try {
       const data = fs.readFileSync(this.fallbackFilePath, 'utf-8');
-      return JSON.parse(data) as ChunkRecord[];
+      this.memoryCache = JSON.parse(data) as ChunkRecord[];
+      return this.memoryCache;
     } catch {
+      this.memoryCache = [];
       return [];
     }
   }

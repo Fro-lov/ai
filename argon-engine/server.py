@@ -94,9 +94,9 @@ async def list_workspace_files():
 async def update_cookies_endpoint(req: CookiesRequest):
     success = await core.update_cookies(req.secure_1psid, req.secure_1psidts)
     if success:
-        return {"success": True, "message": "Куки успешно обновлены и сессия активна."}
+        return {"success": True, "message": "✅ Сессия успешно подтверждена Google! Gemini 4 Argon готов к работе."}
     else:
-        return {"success": False, "message": "Куки сохранены, но не удалось инициализировать сессию. Проверьте валидность токенов."}
+        return {"success": False, "message": "❌ Токены отклонены Google: статус UNAUTHENTICATED. Проверьте актуальность кук в F12 и скопируйте свежие."}
 
 @app.post("/api/reset", dependencies=[Depends(verify_token)])
 async def reset_endpoint(req: Optional[ResetRequest] = None):

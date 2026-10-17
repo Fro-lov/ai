@@ -126,6 +126,17 @@ class ArgonCore:
                 auto_refresh=True
             )
             await self.client.init()
+
+            # Строгая проверка статуса аутентификации в Google
+            from gemini_webapi.constants import AccountStatus
+            if hasattr(self.client, "account_status") and self.client.account_status != AccountStatus.AVAILABLE:
+                status_name = self.client.account_status.name if hasattr(self.client.account_status, "name") else str(self.client.account_status)
+                print(f"[WARN] Gemini client initialized but status is NOT AVAILABLE ({status_name}). Cookies rejected by Google.")
+                self.client = None
+                self.chat_session = None
+                self.user_sessions.clear()
+                return False
+
             self.chat_session = self.client.start_chat()
             self.user_sessions.clear()
             print("[INFO] GeminiClient successfully connected and chat session started!")
@@ -260,6 +271,21 @@ class ArgonCore:
                     "actions": actions_log
                 }
             except Exception as e:
+                err_str = str(e)
+                if "1097" in err_str or "unauthenticated" in err_str.lower() or "permission denied" in err_str.lower():
+                    # Сбрасываем невалидную сессию
+                    self.client = None
+                    self.chat_session = None
+                    self.user_sessions.clear()
+                    return {
+                        "content": (
+                            "🔑 <b>Сессия Gemini 4 истекла или аннулирована Google (Код 1097 / UNAUTHENTICATED)</b>\n\n"
+                            "Куки больше не действительны. Пожалуйста, обновите их командой:\n"
+                            "<code>/cookies &lt;__Secure-1PSID&gt; &lt;__Secure-1PSIDTS&gt;</code>"
+                        ),
+                        "files": [],
+                        "actions": []
+                    }
                 return {
                     "content": f"❌ Ошибка вызова Gemini 4: {e}",
                     "files": [],
@@ -372,6 +398,22 @@ class ArgonCore:
                     "files": sent_files
                 }
             except Exception as e:
+                err_str = str(e)
+                if "1097" in err_str or "unauthenticated" in err_str.lower() or "permission denied" in err_str.lower():
+                    self.client = None
+                    self.chat_session = None
+                    self.user_sessions.clear()
+                    return {
+                        "success": False,
+                        "goal": goal,
+                        "report": (
+                            "🔑 <b>Сессия Gemini 4 истекла или аннулирована Google (Код 1097 / UNAUTHENTICATED)</b>\n\n"
+                            "Куки больше не действительны. Пожалуйста, обновите их командой:\n"
+                            "<code>/cookies &lt;__Secure-1PSID&gt; &lt;__Secure-1PSIDTS&gt;</code>"
+                        ),
+                        "error": "Auth session expired (Error 1097)",
+                        "files": sent_files if 'sent_files' in locals() else []
+                    }
                 return {
                     "success": False,
                     "goal": goal,

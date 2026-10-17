@@ -412,7 +412,11 @@ export class TelegramService {
 
     try {
       const res = await this.argonProvider.updateCookies(parts[0], parts[1]);
-      await ctx.reply(`✅ <b>Сессия обновлена:</b> ${res.message}`, { parse_mode: 'HTML' });
+      if (res.success) {
+        await ctx.reply(`<b>Обновление сессии:</b>\n${res.message}`, { parse_mode: 'HTML' });
+      } else {
+        await ctx.reply(`⚠️ <b>Ошибка авторизации в Google:</b>\n${res.message}`, { parse_mode: 'HTML' });
+      }
     } catch (err) {
       await ctx.reply(`❌ Ошибка обновления куки: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -695,10 +699,17 @@ export class TelegramService {
           errorMessage = '⚠️ Проблема с соединением. Попробуйте позже.';
         } else if (error.message.includes('invalid model')) {
           errorMessage = '⚠️ Неверная модель AI.';
+        } else if (
+          error.message.includes('1097') ||
+          error.message.toLowerCase().includes('unauthenticated') ||
+          error.message.toLowerCase().includes('cookies') ||
+          error.message.toLowerCase().includes('сессия')
+        ) {
+          errorMessage = '🔑 <b>Сессия Gemini 4 истекла или не авторизована (Google Error 1097)</b>\n\nGoogle отклонил куки сессии. Обновите их командой:\n<code>/cookies &lt;__Secure-1PSID&gt; &lt;__Secure-1PSIDTS&gt;</code>';
         }
       }
       
-      await ctx.reply(errorMessage);
+      await ctx.reply(errorMessage, { parse_mode: 'HTML' });
     }
   }
 

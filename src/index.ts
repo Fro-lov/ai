@@ -11,6 +11,7 @@ import { logger } from './utils/logger';
 import { AppError } from './utils/errors';
 import { healthRoute } from './routes/health.route';
 import { chatRoute } from './routes/chat.route';
+import { adminRoute } from './routes/admin.route';
 import { MemoryConversationStore } from './conversation/memory.store';
 import { ConversationService } from './conversation/conversation.service';
 import { AIService } from './ai/ai.service';
@@ -62,6 +63,7 @@ async function buildServer() {
 
   await fastify.register(healthRoute);
   await fastify.register(chatRoute, chatService);
+  await fastify.register(adminRoute, { argonProvider, aiService, ragService });
 
   fastify.setErrorHandler((error, request, reply) => {
     logger.error(`Error: ${error.message}`);

@@ -8,11 +8,14 @@ export interface AIChatInput {
   messages: AIMessage[];
   model?: string;
   maxTokens?: number;
+  userId?: string;
 }
 
 export interface AIChatResponse {
   content: string;
   model: string;
+  files?: Array<{ path: string; filename?: string; caption?: string }>;
+  actions?: string[];
 }
 
 export interface RateLimitInfo {

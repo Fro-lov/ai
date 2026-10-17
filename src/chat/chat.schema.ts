@@ -32,6 +32,11 @@ export const chatRequestSchema = z.object({
     .trim()
     .optional(),
 
+  userId: z
+    .string()
+    .trim()
+    .optional(),
+
   messages: z.array(z.object({
     role: z.enum(['system', 'user', 'assistant']),
     content: z.string(),
@@ -41,6 +46,12 @@ export const chatRequestSchema = z.object({
 export const chatResponseSchema = z.object({
   content: z.string(),
   model: z.string(),
+  files: z.array(z.object({
+    path: z.string(),
+    filename: z.string().optional(),
+    caption: z.string().optional(),
+  })).optional(),
+  actions: z.array(z.string()).optional(),
 });
 
 export type ChatRequest = z.infer<typeof chatRequestSchema>;

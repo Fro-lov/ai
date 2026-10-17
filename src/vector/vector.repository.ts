@@ -165,6 +165,20 @@ export class VectorRepository {
     });
   }
 
+  async getChunkCount(): Promise<{ total: number; storage: 'mysql' | 'json'; error?: string }> {
+    if (this.useFallback || !this.pool) {
+      const chunks = this.loadFromFallback();
+      return { total: chunks.length, storage: 'json' };
+    }
+    try {
+      const [rows] = await this.pool.query<mysql.RowDataPacket[]>('SELECT COUNT(*) as cnt FROM knowledge_chunks');
+      const count = (rows[0] as any)?.cnt ?? 0;
+      return { total: Number(count), storage: 'mysql' };
+    } catch (err) {
+      return { total: 0, storage: 'mysql', error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   private saveToFallback(chunks: ChunkRecord[]): void {
     this.ensureFallbackDir();
     const existing = this.loadFromFallback();

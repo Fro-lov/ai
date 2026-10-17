@@ -27,6 +27,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     max_tokens: Optional[int] = None
+    user_id: Optional[str] = "default"
 
 class TaskRequest(BaseModel):
     goal: str
@@ -35,6 +36,9 @@ class TaskRequest(BaseModel):
 class CookiesRequest(BaseModel):
     secure_1psid: str
     secure_1psidts: str
+
+class ResetRequest(BaseModel):
+    user_id: Optional[str] = None
 
 @app.on_event("startup")
 async def on_startup():
@@ -57,9 +61,11 @@ async def chat_endpoint(req: ChatRequest):
     if not last_user_msg:
         raise HTTPException(status_code=400, detail="No user message provided")
     
-    reply = await core.chat(last_user_msg)
+    result = await core.chat(last_user_msg, user_id=req.user_id or "default")
     return {
-        "content": reply,
+        "content": result["content"],
+        "files": result["files"],
+        "actions": result["actions"],
         "model": "Gemini 4 Argon (Web Session)"
     }
 
@@ -80,6 +86,10 @@ async def get_workspace_file(path: str = Query(..., description="Relative path i
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/workspace/files", dependencies=[Depends(verify_token)])
+async def list_workspace_files():
+    return {"files": core.executor.list_files()}
+
 @app.post("/api/cookies", dependencies=[Depends(verify_token)])
 async def update_cookies_endpoint(req: CookiesRequest):
     success = await core.update_cookies(req.secure_1psid, req.secure_1psidts)
@@ -89,9 +99,10 @@ async def update_cookies_endpoint(req: CookiesRequest):
         return {"success": False, "message": "Куки сохранены, но не удалось инициализировать сессию. Проверьте валидность токенов."}
 
 @app.post("/api/reset", dependencies=[Depends(verify_token)])
-async def reset_endpoint():
-    await core.reset_session()
-    return {"success": True, "message": "Контекст диалога сброшен."}
+async def reset_endpoint(req: Optional[ResetRequest] = None):
+    uid = req.user_id if req else None
+    await core.reset_session(user_id=uid)
+    return {"success": True, "message": f"Контекст диалога {'пользователя ' + uid if uid else ''} сброшен."}
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="127.0.0.1", port=8085, log_level="info")

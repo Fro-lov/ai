@@ -14,9 +14,10 @@ export class TelegramFormatter implements IMessageFormatter {
   format(text: string, _options?: FormatterOptions): string {
     if (!text) return '';
 
-    // Placeholders to protect code blocks and inline code from standard markdown replacement
+    // Placeholders to protect code blocks, inline code, and existing valid HTML tags
     const codeBlocks: string[] = [];
     const inlineCodes: string[] = [];
+    const existingTags: string[] = [];
 
     let processed = text;
 
@@ -39,32 +40,44 @@ export class TelegramFormatter implements IMessageFormatter {
       return placeholder;
     });
 
-    // 3. Escape general HTML in the remaining text
+    // 3. Extract and protect pre-existing valid Telegram HTML tags
+    const validTagRegex = /<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a(?:\s+href="[^"]*")?)\s*\/?>/gi;
+    processed = processed.replace(validTagRegex, (match) => {
+      const placeholder = `@@EXISTINGTAG${existingTags.length}@@`;
+      existingTags.push(match);
+      return placeholder;
+    });
+
+    // 4. Escape general HTML in the remaining text
     processed = this.escapeHtml(processed);
 
-    // 4. Convert Links [text](url) -> <a href="url">text</a>
-    // Note: link text and url are already HTML-escaped
+    // 5. Convert Links [text](url) -> <a href="url">text</a>
     processed = processed.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
 
-    // 5. Convert Headers (# Header) -> <b>Header</b>
+    // 6. Convert Headers (# Header) -> <b>Header</b>
     processed = processed.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
 
-    // 6. Convert Bold (***text***, **text**, __text__) -> <b>text</b>
+    // 7. Convert Bold (***text***, **text**, __text__) -> <b>text</b>
     processed = processed.replace(/(\*{3}|_{3})([\s\S]+?)\1/g, '<b><i>$2</i></b>');
     processed = processed.replace(/(\*{2}|_{2})([\s\S]+?)\1/g, '<b>$2</b>');
 
-    // 7. Convert Italic (*text*, _text_) -> <i>text</i>
+    // 8. Convert Italic (*text*, _text_) -> <i>text</i>
     processed = processed.replace(/(?<!\w)(\*|_)(?!\s)([\s\S]+?)(?<!\s)\1(?!\w)/g, '<i>$2</i>');
 
-    // 8. Convert Bullet Lists (* item, - item) -> • item
+    // 9. Convert Bullet Lists (* item, - item) -> • item
     processed = processed.replace(/^[\s]*[*+-]\s+/gm, '• ');
 
-    // 9. Restore Inline Code
+    // 10. Restore pre-existing HTML tags
+    existingTags.forEach((tagHtml, index) => {
+      processed = processed.replace(`@@EXISTINGTAG${index}@@`, tagHtml);
+    });
+
+    // 11. Restore Inline Code
     inlineCodes.forEach((codeHtml, index) => {
       processed = processed.replace(`@@INLINECODE${index}@@`, codeHtml);
     });
 
-    // 10. Restore Code Blocks
+    // 12. Restore Code Blocks
     codeBlocks.forEach((blockHtml, index) => {
       processed = processed.replace(`@@CODEBLOCK${index}@@`, blockHtml);
     });

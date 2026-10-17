@@ -36,6 +36,7 @@ export class ArgonProvider implements AIProvider {
         body: JSON.stringify({
           messages: input.messages,
           max_tokens: input.maxTokens,
+          user_id: input.userId || 'default',
         }),
       });
 
@@ -44,10 +45,17 @@ export class ArgonProvider implements AIProvider {
         throw new Error(`Argon Engine responded with status ${response.status}: ${errorText}`);
       }
 
-      const data = await response.json() as { content: string; model?: string };
+      const data = await response.json() as {
+        content: string;
+        model?: string;
+        files?: Array<{ path: string; filename?: string; caption?: string }>;
+        actions?: string[];
+      };
       return {
         content: data.content || '',
         model: data.model || this.modelName,
+        files: data.files || [],
+        actions: data.actions || [],
       };
     } catch (error) {
       logger.error(`ArgonProvider request failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -129,13 +137,15 @@ export class ArgonProvider implements AIProvider {
     };
   }
 
-  async resetSession(): Promise<{ success: boolean }> {
+  async resetSession(userId?: string): Promise<{ success: boolean }> {
     const url = `${this.baseUrl}/api/reset`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.secretToken}`,
       },
+      body: JSON.stringify({ user_id: userId }),
     });
 
     return await response.json() as { success: boolean };
@@ -175,6 +185,23 @@ export class ArgonProvider implements AIProvider {
 
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
+  }
+
+  async listWorkspaceFiles(): Promise<Array<{ path: string; filename: string; size: number; modified_at: number }>> {
+    const url = `${this.baseUrl}/api/workspace/files`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${this.secretToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to list workspace files with code ${response.status}`);
+    }
+
+    const data = await response.json() as { files: Array<{ path: string; filename: string; size: number; modified_at: number }> };
+    return data.files || [];
   }
 
   getRuntimeInfo(): AIProviderRuntimeInfo {

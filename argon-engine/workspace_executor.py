@@ -81,3 +81,24 @@ class WorkspaceExecutor:
                 return f"[ERROR: Command timed out after {timeout} seconds and was killed]"
         except Exception as e:
             return f"[ERROR executing command '{clean_cmd}': {e}]"
+
+    def list_files(self) -> List[Dict[str, Any]]:
+        results = []
+        if not self.workspace.exists():
+            return results
+        for root, _, files in os.walk(self.workspace):
+            for file in files:
+                p = Path(root) / file
+                try:
+                    rel = p.relative_to(self.workspace)
+                    stat = p.stat()
+                    results.append({
+                        "path": str(rel).replace("\\", "/"),
+                        "filename": file,
+                        "size": stat.st_size,
+                        "modified_at": stat.st_mtime
+                    })
+                except Exception:
+                    pass
+        results.sort(key=lambda x: x["modified_at"], reverse=True)
+        return results

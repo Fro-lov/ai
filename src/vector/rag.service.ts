@@ -86,6 +86,19 @@ export class RAGService {
   }
 
   /**
+   * Returns statistics about vector storage (chunk count and storage type)
+   */
+  async getStatus(): Promise<{ totalChunks: number; storage: 'mysql' | 'json'; error?: string }> {
+    await this.init();
+    const res = await this.repository.getChunkCount();
+    return {
+      totalChunks: res.total,
+      storage: res.storage,
+      error: res.error,
+    };
+  }
+
+  /**
    * Performs vector similarity search for a query and returns top-K relevant chunks
    */
   async findRelevantChunks(query: string, topK = 3, minScore = 0.3): Promise<SearchResult[]> {

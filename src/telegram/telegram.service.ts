@@ -229,7 +229,7 @@ export class TelegramService {
 
     if (this.isAdmin(userId) && this.argonProvider) {
       try {
-        await this.argonProvider.resetSession();
+        await this.argonProvider.resetSession(userId ? userId.toString() : undefined);
       } catch (err) {
         logger.warn(`Could not reset Argon Engine session: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -651,6 +651,7 @@ export class TelegramService {
         message: cleanedText,
         messages: aiMessages,
         provider: selectedProvider,
+        userId: context.userId ? context.userId.toString() : undefined,
       });
 
       // Add assistant message to conversation
@@ -661,6 +662,24 @@ export class TelegramService {
 
       // Send response to Telegram (split if too long)
       await this.sendLongMessage(ctx, response.content);
+
+      // Send generated files if any
+      if (response.files && response.files.length > 0 && this.argonProvider) {
+        for (const fileInfo of response.files) {
+          try {
+            await ctx.api.sendChatAction(context.chatId, 'upload_document');
+            const buffer = await this.argonProvider.downloadWorkspaceFile(fileInfo.path);
+            const filename = fileInfo.filename || path.basename(fileInfo.path);
+            await ctx.replyWithDocument(new InputFile(buffer, filename), {
+              caption: fileInfo.caption || `📄 Файл: <code>${fileInfo.path}</code>`,
+              parse_mode: 'HTML',
+            });
+          } catch (fileErr) {
+            logger.error(`Error sending chat file '${fileInfo.path}': ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`);
+            await ctx.reply(`⚠️ Не удалось передать файл <code>${fileInfo.path}</code>: ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`, { parse_mode: 'HTML' });
+          }
+        }
+      }
 
       logger.info(`Telegram response sent to chat: ${context.chatId}`);
     } catch (error) {

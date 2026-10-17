@@ -48,6 +48,7 @@ class ArgonCore:
         
         self.client = None
         self.chat_session = None
+        self.user_sessions: Dict[str, Any] = {}
         self.lock = asyncio.Lock()
         self.executor = WorkspaceExecutor()
         self.start_time = time.time()
@@ -71,12 +72,14 @@ class ArgonCore:
             )
             await self.client.init()
             self.chat_session = self.client.start_chat()
+            self.user_sessions.clear()
             print("[INFO] GeminiClient successfully connected and chat session started!")
             return True
         except Exception as e:
             print(f"[ERROR] Failed to initialize GeminiClient: {e}")
             self.client = None
             self.chat_session = None
+            self.user_sessions.clear()
             return False
 
     async def update_cookies(self, secure_1psid: str, secure_1psidts: str) -> bool:
@@ -97,24 +100,122 @@ class ArgonCore:
 
             return await self.init_client()
 
-    async def reset_session(self):
+    async def reset_session(self, user_id: Optional[str] = None):
         async with self.lock:
+            if user_id:
+                if user_id in self.user_sessions:
+                    del self.user_sessions[user_id]
+                return True
             if self.client:
                 self.chat_session = self.client.start_chat()
+                self.user_sessions.clear()
             return True
 
-    async def chat(self, prompt: str) -> str:
+    async def chat(self, prompt: str, user_id: str = "default") -> Dict[str, Any]:
         async with self.lock:
-            if not self.client or not self.chat_session:
+            if not self.client:
                 if not await self.init_client():
-                    return "❌ Ошибка: Сессия Gemini 4 Argon не активна. Пожалуйста, обновите куки через команду /cookies."
+                    return {
+                        "content": "❌ Ошибка: Сессия Gemini 4 Argon не активна. Пожалуйста, обновите куки через команду /cookies.",
+                        "files": [],
+                        "actions": []
+                    }
 
             self.busy = True
             try:
-                response = await self.chat_session.send_message(prompt)
-                return response.text if hasattr(response, "text") else str(response)
+                # Получаем или инициализируем персональную сессию Google Gemini
+                if user_id not in self.user_sessions:
+                    new_session = self.client.start_chat()
+                    try:
+                        # Задаем системные инструкции для чата
+                        await new_session.send_message(
+                            f"{SYSTEM_AGENT_PROMPT}\n\nИнструкции приняты. Ты общаешься напрямую с разработчиком экосистемы Onter. "
+                            f"Отвечай на русском языке. Если для ответа или решения требуется выполнить действие на сервере в /workspace, "
+                            f"используй теги <read>, <write>, <cmd> или <send_file>."
+                        )
+                    except Exception as e:
+                        print(f"[WARN] Could not send initial prompt to user session: {e}")
+                    self.user_sessions[user_id] = new_session
+
+                session = self.user_sessions[user_id]
+
+                # Отправляем сообщение пользователя в живую Google-сессию
+                response = await session.send_message(prompt)
+                raw_text = response.text if hasattr(response, "text") else str(response)
+
+                sent_files = []
+                actions_log = []
+
+                # Проверяем, вызвала ли модель какие-либо действия в /workspace
+                for iteration in range(1, 4):
+                    step_observations = []
+                    actions_found = False
+
+                    # 1. Поиск <read path="..."/>
+                    for match in re.finditer(r'<read\s+path=["\']([^"\']+)["\']\s*/>', raw_text):
+                        actions_found = True
+                        rel_path = match.group(1).strip()
+                        content = self.executor.read_file(rel_path)
+                        step_observations.append(f"[Observation read '{rel_path}']:\n{content}")
+                        actions_log.append(f"Прочитан файл: {rel_path}")
+
+                    # 2. Поиск <write path="...">content</write>
+                    for match in re.finditer(r'<write\s+path=["\']([^"\']+)["\']>(.*?)</write>', raw_text, re.DOTALL):
+                        actions_found = True
+                        rel_path = match.group(1).strip()
+                        file_content = match.group(2)
+                        res = self.executor.write_file(rel_path, file_content)
+                        step_observations.append(f"[Observation write '{rel_path}']:\n{res}")
+                        actions_log.append(f"Записан файл: {rel_path}")
+
+                    # 3. Поиск <cmd>command</cmd>
+                    for match in re.finditer(r'<cmd>(.*?)</cmd>', raw_text, re.DOTALL):
+                        actions_found = True
+                        cmd = match.group(1).strip()
+                        cmd_res = await self.executor.execute_command(cmd)
+                        step_observations.append(f"[Observation cmd '{cmd}']:\n{cmd_res}")
+                        actions_log.append(f"Выполнена команда: {cmd}")
+
+                    # 4. Поиск <send_file path="..." caption="..."/>
+                    for match in re.finditer(r'<send_file\s+path=["\']([^"\']+)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/>', raw_text):
+                        actions_found = True
+                        rel_path = match.group(1).strip()
+                        caption = match.group(2) if match.group(2) else ""
+                        try:
+                            safe_path = self.executor._resolve_safe_path(rel_path)
+                            if safe_path.exists() and safe_path.is_file():
+                                sent_files.append({
+                                    "path": rel_path,
+                                    "filename": safe_path.name,
+                                    "caption": caption
+                                })
+                                step_observations.append(f"[Observation send_file '{rel_path}']: Файл готов к отправке.")
+                                actions_log.append(f"Подготовлен к отправке файл: {safe_path.name}")
+                            else:
+                                step_observations.append(f"[Observation send_file '{rel_path}']: Ошибка — файл не найден.")
+                        except Exception as e:
+                            step_observations.append(f"[Observation send_file '{rel_path}']: Ошибка доступа — {e}")
+
+                    if not actions_found:
+                        break
+
+                    # Передаем результат действий обратно в эту же сессию
+                    obs_text = "\n\n".join(step_observations)
+                    obs_prompt = f"Результаты выполнения действий на сервере:\n{obs_text}\n\nПроанализируй результат и дай ответ пользователю."
+                    response = await session.send_message(obs_prompt)
+                    raw_text = response.text if hasattr(response, "text") else str(response)
+
+                return {
+                    "content": raw_text.strip(),
+                    "files": sent_files,
+                    "actions": actions_log
+                }
             except Exception as e:
-                return f"❌ Ошибка вызова Gemini 4: {e}"
+                return {
+                    "content": f"❌ Ошибка вызова Gemini 4: {e}",
+                    "files": [],
+                    "actions": []
+                }
             finally:
                 self.busy = False
 

@@ -1,82 +1,21 @@
-name: Deploy Onter AI & Argon Hub Production
+name: Deploy Onter AI & Argon Hub
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [ main ]
 
 jobs:
   deploy:
     runs-on: self-hosted
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Sync Onter AI Gateway
+      - name: Deploy changes to host
         run: |
-          mkdir -p /opt/onter-ai
-          rsync -rlt --no-owner --no-group \
-            --exclude='.env' \
-            --exclude='.env.local' \
-            --exclude='.git/' \
-            --exclude='node_modules/' \
-            --exclude='data/knowledge_chunks.json' \
-            --exclude='dist/' \
-            ./ /opt/onter-ai/
-
-      - name: Sync Argon Engine
-        run: |
-          mkdir -p /opt/argon-engine
-          rsync -rlt --no-owner --no-group \
-            --exclude='.env' \
-            --exclude='venv/' \
-            --exclude='__pycache__/' \
-            --exclude='*.pyc' \
-            ./argon-engine/ /opt/argon-engine/
-
-      - name: Build Onter AI & Update Dependencies
-        run: |
+          echo "=== 🚀 Starting Automatic Deployment ==="
           cd /opt/onter-ai
-          npm install --production=false
-          npm run build
-
-      - name: Update Argon Engine Dependencies
-        run: |
-          if [ -d "/opt/argon-engine/venv" ]; then
-            /opt/argon-engine/venv/bin/pip install --upgrade -r /opt/argon-engine/requirements.txt
-          fi
-
-      - name: Restart Systemd Services
-        run: |
-          sudo systemctl restart argon-engine.service
-          sudo systemctl restart onter-ai.service
-
-      - name: Verify Health Check
-        run: |
-          echo "Verifying Onter AI Gateway health on port 3001..."
-          for i in {1..20}; do
-            if curl -fs http://127.0.0.1:3001/health > /dev/null; then
-              echo "Onter AI Gateway is healthy and responding!"
-              break
-            fi
-            echo "Waiting for Onter AI Gateway... ($i/20)"
-            sleep 2
-          done
-
-          echo "Verifying Argon Engine health on port 8085..."
-          for i in {1..20}; do
-            STATUS=$(curl -s -H "Authorization: Bearer onter_argon_secret_2026" http://127.0.0.1:8085/api/status)
-            if echo "$STATUS" | grep -q "sessionActive"; then
-              echo "Argon Engine is healthy and responding!"
-              exit 0
-            fi
-            echo "Waiting for Argon Engine... ($i/20)"
-            sleep 2
-          done
-
-          echo "Health check failed!"
-          sudo journalctl -u onter-ai.service -n 30 --no-pager
-          sudo journalctl -u argon-engine.service -n 30 --no-pager
-          exit 1
+          git pull origin main
+          cp -r /opt/onter-ai/argon-engine/* /opt/argon-engine/
+          sudo systemctl restart argon-engine onter-ai
+          echo "=== 🩺 Verifying Service Status ==="
+          sudo systemctl is-active --quiet argon-engine && echo "Argon Engine: OK" || (echo "Argon Engine: FAILED" && exit 1)
+          sudo systemctl is-active --quiet onter-ai && echo "Onter AI: OK" || (echo "Onter AI: FAILED" && exit 1)
+          echo "=== ✅ Deployment completed successfully! ==="

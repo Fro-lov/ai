@@ -42,9 +42,12 @@ SYSTEM_AGENT_PROMPT = """Ты — автономный серверный ИИ-�
 
 class ArgonCore:
     def __init__(self, secure_1psid: str = "", secure_1psidts: str = "", env_file_path: Optional[str] = None):
-        self.secure_1psid = secure_1psid or os.environ.get("SECURE_1PSID", "")
-        self.secure_1psidts = secure_1psidts or os.environ.get("SECURE_1PSIDTS", "")
         self.env_file_path = env_file_path or os.environ.get("ENV_FILE_PATH", "/opt/argon-engine/.env")
+        
+        # Сначала читаем сохраненные на диске куки из .env (гарантия сохранения между перезапусками)
+        file_psid, file_psidts = self._read_cookies_from_env()
+        self.secure_1psid = secure_1psid or file_psid or os.environ.get("SECURE_1PSID", "")
+        self.secure_1psidts = secure_1psidts or file_psidts or os.environ.get("SECURE_1PSIDTS", "")
         
         self.client = None
         self.chat_session = None
@@ -53,6 +56,58 @@ class ArgonCore:
         self.executor = WorkspaceExecutor()
         self.start_time = time.time()
         self.busy = False
+        self.sync_task = None
+
+    def _read_cookies_from_env(self) -> tuple:
+        try:
+            env_path = Path(self.env_file_path)
+            if not env_path.exists():
+                return "", ""
+            content = env_path.read_text(encoding="utf-8")
+            psid_match = re.search(r"^SECURE_1PSID=(.*)$", content, re.MULTILINE)
+            psidts_match = re.search(r"^SECURE_1PSIDTS=(.*)$", content, re.MULTILINE)
+            psid = psid_match.group(1).strip() if psid_match else ""
+            psidts = psidts_match.group(1).strip() if psidts_match else ""
+            return psid, psidts
+        except Exception as e:
+            print(f"[WARN] Error reading cookies from {self.env_file_path}: {e}")
+            return "", ""
+
+    def _save_cookies_to_env(self, secure_1psid: str, secure_1psidts: str):
+        try:
+            env_path = Path(self.env_file_path)
+            if env_path.exists():
+                content = env_path.read_text(encoding="utf-8")
+                if "SECURE_1PSID=" in content:
+                    content = re.sub(r"^SECURE_1PSID=.*$", f"SECURE_1PSID={secure_1psid}", content, flags=re.MULTILINE)
+                else:
+                    content += f"\nSECURE_1PSID={secure_1psid}\n"
+                if "SECURE_1PSIDTS=" in content:
+                    content = re.sub(r"^SECURE_1PSIDTS=.*$", f"SECURE_1PSIDTS={secure_1psidts}", content, flags=re.MULTILINE)
+                else:
+                    content += f"\nSECURE_1PSIDTS={secure_1psidts}\n"
+                env_path.write_text(content, encoding="utf-8")
+            else:
+                env_path.write_text(f"SECURE_1PSID={secure_1psid}\nSECURE_1PSIDTS={secure_1psidts}\n", encoding="utf-8")
+            print(f"[INFO] Persistent cookies saved to {self.env_file_path}")
+        except Exception as e:
+            print(f"[WARN] Failed to write updated cookies to {self.env_file_path}: {e}")
+
+    async def _sync_rotated_cookies_loop(self):
+        """Периодически проверяет ротированные Google куки в памяти и сбрасывает их на диск в .env"""
+        while True:
+            await asyncio.sleep(120)
+            try:
+                if self.client and hasattr(self.client, "cookies"):
+                    current_cookies = dict(self.client.cookies)
+                    new_psidts = current_cookies.get("__Secure-1PSIDTS")
+                    new_psid = current_cookies.get("__Secure-1PSID") or self.secure_1psid
+                    if new_psidts and new_psidts != self.secure_1psidts:
+                        self.secure_1psidts = new_psidts
+                        self._save_cookies_to_env(new_psid, new_psidts)
+                        print(f"[INFO] Auto-persisted Google rotated __Secure-1PSIDTS to disk!")
+            except Exception as e:
+                print(f"[WARN] Error in cookie sync loop: {e}")
 
     async def init_client(self):
         if not self.secure_1psid or not self.secure_1psidts:
@@ -74,6 +129,11 @@ class ArgonCore:
             self.chat_session = self.client.start_chat()
             self.user_sessions.clear()
             print("[INFO] GeminiClient successfully connected and chat session started!")
+
+            # Запускаем фоновую синхронизацию ротированных кук на диск
+            if self.sync_task is None or self.sync_task.done():
+                self.sync_task = asyncio.create_task(self._sync_rotated_cookies_loop())
+
             return True
         except Exception as e:
             print(f"[ERROR] Failed to initialize GeminiClient: {e}")
@@ -86,18 +146,7 @@ class ArgonCore:
         async with self.lock:
             self.secure_1psid = secure_1psid.strip()
             self.secure_1psidts = secure_1psidts.strip()
-
-            # Обновляем файл .env, если он существует
-            try:
-                env_path = Path(self.env_file_path)
-                if env_path.exists():
-                    content = env_path.read_text(encoding="utf-8")
-                    content = re.sub(r"SECURE_1PSID=.*", f"SECURE_1PSID={self.secure_1psid}", content)
-                    content = re.sub(r"SECURE_1PSIDTS=.*", f"SECURE_1PSIDTS={self.secure_1psidts}", content)
-                    env_path.write_text(content, encoding="utf-8")
-            except Exception as e:
-                print(f"[WARN] Failed to write updated cookies to .env: {e}")
-
+            self._save_cookies_to_env(self.secure_1psid, self.secure_1psidts)
             return await self.init_client()
 
     async def reset_session(self, user_id: Optional[str] = None):

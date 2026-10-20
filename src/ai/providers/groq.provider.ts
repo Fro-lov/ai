@@ -47,7 +47,8 @@ export class GroqProvider implements AIProvider {
         messages: input.messages,
         model: input.model || env.GROQ_MODEL,
         max_tokens: input.maxTokens || parseInt(env.AI_MAX_TOKENS),
-        temperature: 0.1,
+        temperature: input.temperature !== undefined ? input.temperature : 0.1,
+        ...(input.responseFormat ? { response_format: input.responseFormat } : {}),
       }).withResponse();
 
       const content = response.choices[0]?.message?.content || '';

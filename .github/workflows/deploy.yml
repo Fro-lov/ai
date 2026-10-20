@@ -13,6 +13,7 @@ jobs:
           echo "=== 🚀 Starting Automatic Deployment ==="
           cd /opt/onter-ai
           git pull origin main
+          npm run build
           cp -r /opt/onter-ai/argon-engine/* /opt/argon-engine/
           sudo systemctl restart argon-engine onter-ai
           echo "=== 🩺 Verifying Service Status ==="

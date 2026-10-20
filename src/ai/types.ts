@@ -9,6 +9,8 @@ export interface AIChatInput {
   model?: string;
   maxTokens?: number;
   userId?: string;
+  temperature?: number;
+  responseFormat?: { type: 'json_object' | 'text' };
 }
 
 export interface AIChatResponse {

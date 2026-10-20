@@ -1,5 +1,5 @@
 import path from 'path';
-import { Bot, Context, InputFile } from 'grammy';
+import { Bot, Context, InputFile, InlineKeyboard } from 'grammy';
 import { ConversationService } from '../conversation/conversation.service';
 import { ChatService } from '../chat/chat.service';
 import { AIService } from '../ai/ai.service';
@@ -9,6 +9,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { TelegramMessageContext } from './telegram.types';
 import { ArgonProvider } from '../ai';
+import { NoteService, NoteQuestionResponse } from '../notes';
 
 export class TelegramService {
   private bot: Bot;
@@ -18,6 +19,7 @@ export class TelegramService {
   private aiService: AIService;
   private formatterService: FormatterService;
   private argonProvider?: ArgonProvider;
+  private noteService: NoteService;
   private userSelectedProvider: Map<number, string> = new Map();
 
   constructor(
@@ -26,7 +28,8 @@ export class TelegramService {
     promptService: PromptService,
     aiService: AIService,
     formatterService: FormatterService = defaultFormatterService,
-    argonProvider?: ArgonProvider
+    argonProvider?: ArgonProvider,
+    noteService?: NoteService
   ) {
     this.bot = new Bot(env.TELEGRAM_BOT_TOKEN!);
     this.conversationService = conversationService;
@@ -35,6 +38,7 @@ export class TelegramService {
     this.aiService = aiService;
     this.formatterService = formatterService;
     this.argonProvider = argonProvider;
+    this.noteService = noteService || new NoteService(aiService);
 
     this.setupHandlers();
   }
@@ -57,10 +61,15 @@ export class TelegramService {
     this.bot.command('limits', this.handleLimits.bind(this));
     this.bot.command('history', this.handleHistory.bind(this));
     this.bot.command('status', this.handleStatus.bind(this));
+    this.bot.command('note', this.handleNote.bind(this));
+    this.bot.command('cancel_note', this.handleCancelNote.bind(this));
     this.bot.command('argon', this.handleArgon.bind(this));
     this.bot.command('cookies', this.handleCookies.bind(this));
     this.bot.command('model', this.handleModel.bind(this));
     this.bot.command('getfile', this.handleGetFile.bind(this));
+
+    // Handle interactive note inline button callbacks
+    this.bot.callbackQuery(/^note:(opt:[1-3]|finish|cancel)$/, this.handleNoteCallback.bind(this));
 
     // Handle text messages
     this.bot.on('message:text', async (ctx, next) => {
@@ -282,7 +291,9 @@ export class TelegramService {
     `.trim();
 
     if (this.isAdmin(userId)) {
-      message += `\n\n⚡ <b>Команды Администратора (Argon Hub):</b>
+      message += `\n\n⚡ <b>Команды Администратора:</b>
+/note &lt;идея&gt; - Интерактивная распаковка идеи в ТЗ для агента
+/cancel_note - Отменить текущую сессию идеи
 /argon &lt;задача&gt; - Запуск автономного агента в /workspace
 /getfile &lt;путь&gt; - Скачать файл из /workspace в Telegram
 /status - Проверка состояния сервера и сессии Gemini 4
@@ -601,6 +612,223 @@ export class TelegramService {
     await this.sendLongMessage(ctx, message.trim());
   }
 
+  private async handleNote(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+    if (!userId || !chatId) return;
+
+    if (!this.isAdmin(userId)) {
+      await ctx.reply('⛔ Режим заметок доступен только администратору.');
+      return;
+    }
+
+    const messageText = ctx.message?.text || '';
+    const rawIdea = messageText.replace(/^\/note(@\w+)?/i, '').trim();
+
+    if (!rawIdea) {
+      await ctx.reply(
+        '💡 <b>Использование:</b> <code>/note &lt;описание вашей идеи&gt;</code>\n\n' +
+        '<b>Пример:</b>\n' +
+        '<code>/note сделать в гта 5 тир с нпс(манекенами) в виде зомби и здоровых людей</code>\n\n' +
+        'Бот задаст несколько уточняющих вопросов с кнопками (1-3) и сформирует готовое к выполнению ТЗ для автономного агента.',
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
+    logger.info(`Starting note clarification session for admin ${userId}: "${rawIdea.slice(0, 50)}..."`);
+    const statusMsg = await ctx.reply('🤔 <i>Анализирую идею и формулирую вопросы...</i>', { parse_mode: 'HTML' });
+
+    try {
+      await ctx.api.sendChatAction(chatId, 'typing');
+      const selectedProvider = this.userSelectedProvider.get(userId) || env.AI_DEFAULT_PROVIDER;
+      const questionData = await this.noteService.startSession(userId, chatId, rawIdea, selectedProvider);
+
+      await this.sendNoteQuestionMessage(ctx, userId, questionData, 1, 3);
+    } catch (err) {
+      logger.error(`Error in /note command: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply(`❌ Сбой при запуске распаковки идеи: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      try {
+        await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+      } catch {}
+    }
+  }
+
+  private async handleCancelNote(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!userId || !this.isAdmin(userId)) return;
+
+    const cancelled = this.noteService.cancelSession(userId);
+    if (cancelled) {
+      await ctx.reply('🔄 Активная сессия распаковки идеи отменена.');
+    } else {
+      await ctx.reply('ℹ️ У вас нет активной сессии заметок. Запустить новую: <code>/note &lt;идея&gt;</code>', { parse_mode: 'HTML' });
+    }
+  }
+
+  private async sendNoteQuestionMessage(
+    ctx: Context,
+    userId: number,
+    data: NoteQuestionResponse,
+    step: number,
+    maxSteps: number
+  ): Promise<void> {
+    const opt1 = data.options[0] || 'Вариант 1';
+    const opt2 = data.options[1] || 'Вариант 2';
+    const opt3 = data.options[2] || 'Вариант 3';
+
+    const text =
+      `💡 <b>Уточнение идеи (Вопрос ${step} из ${maxSteps})</b>\n\n` +
+      `❓ <b>${data.question}</b>\n\n` +
+      `1️⃣ ${opt1}\n` +
+      `2️⃣ ${opt2}\n` +
+      `3️⃣ ${opt3}\n\n` +
+      `<i>Нажмите кнопку (1, 2, 3) или отправьте сообщение со своим развернутым вариантом:</i>`;
+
+    const keyboard = new InlineKeyboard()
+      .text('1️⃣', 'note:opt:1')
+      .text('2️⃣', 'note:opt:2')
+      .text('3️⃣', 'note:opt:3')
+      .row()
+      .text('🏁 Сформировать ТЗ сейчас', 'note:finish')
+      .text('❌ Отмена', 'note:cancel');
+
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
+  }
+
+  private async handleNoteCallback(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+    if (!userId || !chatId || !this.isAdmin(userId)) {
+      await ctx.answerCallbackQuery({ text: '⛔ Доступ ограничен' }).catch(() => {});
+      return;
+    }
+
+    const data = ctx.callbackQuery?.data;
+    if (!data) return;
+
+    if (!this.noteService.hasActiveSession(userId)) {
+      await ctx.answerCallbackQuery({ text: 'Сессия заметок уже завершена' }).catch(() => {});
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+      } catch {}
+      return;
+    }
+
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (data === 'note:cancel') {
+      this.noteService.cancelSession(userId);
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+      } catch {}
+      await ctx.reply('❌ Режим распаковки идеи отменен.');
+      return;
+    }
+
+    if (data === 'note:finish') {
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+      } catch {}
+      const statusMsg = await ctx.reply('⚙️ <i>Формирую подробную спецификацию и промпт для агента...</i>', { parse_mode: 'HTML' });
+      try {
+        await ctx.api.sendChatAction(chatId, 'typing');
+        const selectedProvider = this.userSelectedProvider.get(userId) || env.AI_DEFAULT_PROVIDER;
+        const resultPrompt = await this.noteService.finalizeSession(userId, selectedProvider);
+        await this.sendLongMessage(ctx, resultPrompt);
+      } catch (err) {
+        logger.error(`Error finalizing note session: ${err instanceof Error ? err.message : String(err)}`);
+        await ctx.reply(`❌ Ошибка генерации ТЗ: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        try {
+          await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+        } catch {}
+      }
+      return;
+    }
+
+    const optMatch = data.match(/^note:opt:([1-3])$/);
+    if (optMatch) {
+      const optionNum = parseInt(optMatch[1], 10);
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+      } catch {}
+
+      const session = this.noteService.getSession(userId);
+      const chosenText = session?.currentOptions?.[optionNum - 1] || `Вариант ${optionNum}`;
+      await ctx.reply(`✅ <b>Выбран вариант ${optionNum}:</b> ${chosenText}`, { parse_mode: 'HTML' });
+
+      const statusMsg = await ctx.reply('⏳ <i>Обрабатываю ответ...</i>', { parse_mode: 'HTML' });
+
+      try {
+        await ctx.api.sendChatAction(chatId, 'typing');
+        const selectedProvider = this.userSelectedProvider.get(userId) || env.AI_DEFAULT_PROVIDER;
+        const currentStep = session ? session.stepNumber : 1;
+        const maxSteps = session ? session.maxSteps : 3;
+
+        const res = await this.noteService.answerCurrentQuestion(userId, optionNum, selectedProvider);
+
+        if (res.isFinished && res.agentPrompt) {
+          await this.sendLongMessage(ctx, res.agentPrompt);
+        } else if (res.nextQuestion) {
+          await this.sendNoteQuestionMessage(ctx, userId, res.nextQuestion, currentStep + 1, maxSteps);
+        }
+      } catch (err) {
+        logger.error(`Error processing note answer: ${err instanceof Error ? err.message : String(err)}`);
+        await ctx.reply(`❌ Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        try {
+          await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+        } catch {}
+      }
+    }
+  }
+
+  private async handleNoteTextAnswer(
+    ctx: Context,
+    context: TelegramMessageContext,
+    userText: string
+  ): Promise<void> {
+    const userId = context.userId;
+    const chatId = context.chatId;
+
+    if (userText.toLowerCase() === '/cancel' || userText.toLowerCase() === '/cancel_note') {
+      this.noteService.cancelSession(userId);
+      await ctx.reply('❌ Режим заметок отменен.');
+      return;
+    }
+
+    await ctx.reply(`✏️ <b>Ваш ответ:</b> ${userText}`, { parse_mode: 'HTML' });
+    const statusMsg = await ctx.reply('⏳ <i>Анализирую уточнение...</i>', { parse_mode: 'HTML' });
+
+    try {
+      await ctx.api.sendChatAction(chatId, 'typing');
+      const selectedProvider = this.userSelectedProvider.get(userId) || env.AI_DEFAULT_PROVIDER;
+      const session = this.noteService.getSession(userId);
+      const currentStep = session ? session.stepNumber : 1;
+      const maxSteps = session ? session.maxSteps : 3;
+
+      const res = await this.noteService.answerCurrentQuestion(userId, userText, selectedProvider);
+
+      if (res.isFinished && res.agentPrompt) {
+        await this.sendLongMessage(ctx, res.agentPrompt);
+      } else if (res.nextQuestion) {
+        await this.sendNoteQuestionMessage(ctx, userId, res.nextQuestion, currentStep + 1, maxSteps);
+      }
+    } catch (err) {
+      logger.error(`Error processing custom note text answer: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply(`❌ Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      try {
+        await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+      } catch {}
+    }
+  }
+
   private async handleTextMessage(ctx: Context): Promise<void> {
     const context = this.extractMessageContext(ctx);
     if (!context) return;
@@ -616,6 +844,14 @@ export class TelegramService {
     const cleanedText = this.cleanText(context);
     if (!cleanedText) {
       return; // Don't send empty messages
+    }
+
+    // Intercept if admin has an active note clarification session
+    if (this.isAdmin(context.userId) && this.noteService.hasActiveSession(context.userId)) {
+      if (!cleanedText.startsWith('/')) {
+        await this.handleNoteTextAnswer(ctx, context, cleanedText);
+        return;
+      }
     }
 
     const conversationId = this.getConversationId(context.chatId);
@@ -720,6 +956,8 @@ export class TelegramService {
     await this.bot.api.setMyCommands([
       { command: 'start', description: 'Начать работу' },
       { command: 'help', description: 'Список команд' },
+      { command: 'note', description: 'Распаковать идею в ТЗ для агента' },
+      { command: 'cancel_note', description: 'Отменить сессию идеи' },
       { command: 'status', description: 'Состояние хаба и сессий' },
       { command: 'model', description: 'Переключить модель (groq/argon)' },
       { command: 'argon', description: 'Запустить агента в /workspace' },

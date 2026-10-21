@@ -21,6 +21,11 @@ const envSchema = z.object({
   ADMIN_TELEGRAM_IDS: z.string().default(''),
   ARGON_ENGINE_URL: z.string().default('http://127.0.0.1:8085'),
   ARGON_SECRET_TOKEN: z.string().default('onter_argon_secret_2026'),
+  POSTGRES_HOST: z.string().default('127.0.0.1'),
+  POSTGRES_PORT: z.string().default('5432'),
+  POSTGRES_USER: z.string().default('onter_ai'),
+  POSTGRES_PASSWORD: z.string().default('onter_pg_pass_2026'),
+  POSTGRES_DB: z.string().default('onter_ai'),
 });
 
 type Env = z.infer<typeof envSchema>;

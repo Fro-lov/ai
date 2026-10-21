@@ -1,15 +1,47 @@
 import { AIService } from '../ai/ai.service';
 import { logger } from '../utils/logger';
 import { NoteSession, NoteQuestionResponse, NoteClarificationStep } from './note.types';
+import { IdeaRepository } from './idea.repository';
+
+export function detectProjectId(text: string): string {
+  const t = text.toLowerCase();
+  if (t.includes('gta') || t.includes('fivem') || t.includes('lua') || t.includes('гта')) {
+    return 'fivem';
+  }
+  if (
+    t.includes('minecraft') ||
+    t.includes('майн') ||
+    t.includes('скайблок') ||
+    t.includes('мод') ||
+    t.includes('atm10') ||
+    t.includes('kubejs')
+  ) {
+    return 'minecraft';
+  }
+  if (t.includes('scrap') || t.includes('скрап')) {
+    return 'scrap_evolution';
+  }
+  return 'general';
+}
 
 export class NoteService {
   private sessions: Map<number, NoteSession> = new Map();
   private readonly SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour TTL
   private readonly DEFAULT_MAX_STEPS = 3;
+  private ideaRepo: IdeaRepository;
 
-  constructor(private aiService: AIService) {
+  constructor(private aiService: AIService, ideaRepo?: IdeaRepository) {
+    this.ideaRepo = ideaRepo || new IdeaRepository();
+    this.ideaRepo.init().catch(err => {
+      logger.warn(`IdeaRepository async init error: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
     // Periodic cleanup of stale sessions every 10 minutes
     setInterval(() => this.cleanupExpiredSessions(), 10 * 60 * 1000).unref();
+  }
+
+  public getIdeaRepository(): IdeaRepository {
+    return this.ideaRepo;
   }
 
   private cleanupExpiredSessions(): void {
@@ -80,6 +112,7 @@ export class NoteService {
     isFinished: boolean;
     nextQuestion?: NoteQuestionResponse;
     agentPrompt?: string;
+    ideaId?: number;
   }> {
     const session = this.sessions.get(userId);
     if (!session) {
@@ -112,18 +145,40 @@ export class NoteService {
 
     // Check if we reached max steps
     if (session.stepNumber > session.maxSteps) {
-      const finalPrompt = await this.generateFinalAgentPrompt(session, providerName);
+      const { title, content } = await this.generateFinalAgentPrompt(session, providerName);
+      const projectId = detectProjectId(`${session.rawIdea} ${content}`);
+      const ideaId = await this.ideaRepo.saveIdea({
+        userId,
+        chatId: session.chatId,
+        projectId,
+        title,
+        rawIdea: session.rawIdea,
+        clarificationSteps: session.steps,
+        specification: content,
+      });
+
       this.sessions.delete(userId);
-      return { isFinished: true, agentPrompt: finalPrompt };
+      return { isFinished: true, agentPrompt: content, ideaId: ideaId || undefined };
     }
 
     // Generate next question
     const nextQuestionData = await this.generateNextQuestion(session, providerName);
 
     if (nextQuestionData.isReadyToFinalize) {
-      const finalPrompt = await this.generateFinalAgentPrompt(session, providerName);
+      const { title, content } = await this.generateFinalAgentPrompt(session, providerName);
+      const projectId = detectProjectId(`${session.rawIdea} ${content}`);
+      const ideaId = await this.ideaRepo.saveIdea({
+        userId,
+        chatId: session.chatId,
+        projectId,
+        title,
+        rawIdea: session.rawIdea,
+        clarificationSteps: session.steps,
+        specification: content,
+      });
+
       this.sessions.delete(userId);
-      return { isFinished: true, agentPrompt: finalPrompt };
+      return { isFinished: true, agentPrompt: content, ideaId: ideaId || undefined };
     }
 
     session.currentQuestion = nextQuestionData.question;
@@ -135,14 +190,94 @@ export class NoteService {
     };
   }
 
-  public async finalizeSession(userId: number, providerName?: string): Promise<string> {
+  public async finalizeSession(
+    userId: number,
+    providerName?: string
+  ): Promise<{ agentPrompt: string; ideaId?: number }> {
     const session = this.sessions.get(userId);
     if (!session) {
       throw new Error('Активная сессия заметок не найдена.');
     }
-    const finalPrompt = await this.generateFinalAgentPrompt(session, providerName);
+    const { title, content } = await this.generateFinalAgentPrompt(session, providerName);
+    const projectId = detectProjectId(`${session.rawIdea} ${content}`);
+    const ideaId = await this.ideaRepo.saveIdea({
+      userId,
+      chatId: session.chatId,
+      projectId,
+      title,
+      rawIdea: session.rawIdea,
+      clarificationSteps: session.steps,
+      specification: content,
+    });
+
     this.sessions.delete(userId);
-    return finalPrompt;
+    return { agentPrompt: content, ideaId: ideaId || undefined };
+  }
+
+  public async amendIdea(
+    ideaId: number,
+    amendmentText: string,
+    providerName?: string
+  ): Promise<{ updatedContent: string; updatedTitle?: string }> {
+    const idea = await this.ideaRepo.getIdeaById(ideaId);
+    if (!idea) {
+      throw new Error(`Идея с ID #${ideaId} не найдена в базе данных.`);
+    }
+
+    const promptMessages = [
+      {
+        role: 'system' as const,
+        content: `Ты — персональный ассистент по ведению технической документации и идей.
+Пользователь хочет внести правки или дополнения в ранее зафиксированную идею.
+Твоя задача — обновить текст идеи и готовый промпт для агента, аккуратно внедрив правку пользователя.
+
+КАТЕГОРИЧЕСКИЕ ПРАВИЛА:
+1. Сохраняй исходную структуру, стиль и разметку Markdown.
+2. Не придумывай лишних технологий, библиотек, файлов или координат, если пользователь прямо об этом не просил.
+3. Внедри изменения так, чтобы они органично вписались в контекст идеи.
+4. В самой первой строке укажи заголовок: TITLE: <Краткое название идеи (3-6 слов)>.
+5. В конце обнови блок задания для автономного агента в кодовых кавычках \`\`\`markdown ... \`\`\`.`,
+      },
+      {
+        role: 'user' as const,
+        content: `Исходный текст идеи:
+${idea.specification}
+
+Запрос пользователя на изменение/дополнение:
+"${amendmentText}"
+
+Сформируй полностью обновленный текст идеи с учетом правок.`,
+      },
+    ];
+
+    try {
+      const response = await this.aiService.chat(
+        {
+          messages: promptMessages,
+          temperature: 0.2,
+        },
+        providerName
+      );
+
+      let cleanContent = response.content.trim();
+      let updatedTitle: string | undefined = undefined;
+
+      const titleMatch = cleanContent.match(/^TITLE:\s*(.+)$/m);
+      if (titleMatch) {
+        updatedTitle = titleMatch[1].trim();
+        cleanContent = cleanContent.replace(/^TITLE:\s*.+\r?\n+/m, '').trim();
+      }
+
+      await this.ideaRepo.updateSpecification(ideaId, cleanContent, updatedTitle);
+
+      return {
+        updatedContent: cleanContent,
+        updatedTitle: updatedTitle || idea.title,
+      };
+    } catch (err) {
+      logger.error(`Error amending idea #${ideaId}: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    }
   }
 
   private async generateNextQuestion(
@@ -163,7 +298,7 @@ export class NoteService {
         role: 'system' as const,
         content: `Ты — Senior Systems Analyst и Technical Product Architect.
 Твоя задача — помочь автору распаковать его сырую идею в структурированное техническое задание.
-Каждый шаг ты задаешь РОВНО ОДИН четкий вопрос, который проясняет самое критичное белое пятно в реализации (архитектура, стек, механики, логика взаимодействия, обработка пограничных условий).
+Каждый шаг ты задаешь РОВНО ОДИН четкий вопрос, который проясняет самое критичное белое пятно в реализации (механики, логика взаимодействия, ключевые правила).
 
 ТРЕБОВАНИЯ К ВОПРОСУ И ВАРИАНТАМ:
 1. Вопрос должен быть конкретным и направленным на суть фичи (без лишней абстрактной "воды").
@@ -204,7 +339,6 @@ ${historyText ? `Уже уточненные детали:\n${historyText}\n\n` 
       return parsed;
     } catch (err) {
       logger.error(`Error generating next note question: ${err instanceof Error ? err.message : String(err)}`);
-      // Fallback in case of parsing/generation issue
       return {
         question: 'Уточните ключевой стек и формат интеграции фичи:',
         options: [
@@ -219,7 +353,6 @@ ${historyText ? `Уже уточненные детали:\n${historyText}\n\n` 
 
   private parseQuestionResponse(content: string): NoteQuestionResponse {
     let clean = content.trim();
-    // Strip markdown json fences if present
     if (clean.startsWith('```')) {
       clean = clean.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     }
@@ -261,7 +394,7 @@ ${historyText ? `Уже уточненные детали:\n${historyText}\n\n` 
   private async generateFinalAgentPrompt(
     session: NoteSession,
     providerName?: string
-  ): Promise<string> {
+  ): Promise<{ title: string; content: string }> {
     const summaryClarifications = session.steps
       .map(
         (s, i) =>
@@ -272,21 +405,28 @@ ${historyText ? `Уже уточненные детали:\n${historyText}\n\n` 
     const promptMessages = [
       {
         role: 'system' as const,
-        content: `Ты — ведущий инженер по разработке промптов (Prompt Engineer) и системный архитектор.
-Твоя задача — взять сырую идею автора и результаты интерактивного интервью и сформировать ИДЕАЛЬНОЕ, ГОТОВОЕ К ВЫПОЛНЕНИЮ ТЕХНИЧЕСКОЕ ЗАДАНИЕ (ПРОМПТ) ДЛЯ АВТОНОМНОГО ИИ-АГЕНТА (такого как Antigravity, Claude Sonnet 3.7, Cursor или ReAct агент).
+        content: `Ты — персональный ассистент по кристаллизации идей и постановке задач для ИИ-агентов.
+Твоя задача — зафиксировать суть идеи автора и зафиксированные в диалоге решения так, чтобы:
+1. Через месяц автор перечитал заметку и мгновенно вспомнил, что именно и зачем он задумал.
+2. Промпт в конце можно было сразу скопировать и отдать разработчику или автономному агенту как четкий бриф функционала.
 
-СТРОГИЕ ПРАВИЛА:
-1. Пиши на русском языке.
-2. Никаких выдумок, предположений вне контекста или пустых абстракций ("реализуйте по вкусу"). Все должно опираться строго на идею и ответы автора.
-3. Стиль: строгий, технический, структурированный, с профессиональной разметкой Markdown.
-4. В конце ОБЯЗАТЕЛЬНО должен быть блок в кодовых кавычках \`\`\`markdown ... \`\`\`, который автор сможет скопировать в один клик и отправить агенту для мгновенного выполнения.
+КАТЕГОРИЧЕСКИЕ ЗАПРЕТЫ (АНТИ-ГАЛЛЮЦИНАЦИЯ):
+1. ЗАПРЕЩЕНО выдумывать стек, языки программирования, фреймворки, библиотеки (C++, Script Hook V, React и т.д.), если автор явно их не назвал! Агент сам определит стек по кодовой базе проекта.
+2. ЗАПРЕЩЕНО выдумывать архитектуру файлов (Main.cpp, Spawner.h), игровые координаты, горячие клавиши, формулы и конкретные ID моделей, если они не были согласованы с автором.
+3. Опирайся ИСКЛЮЧИТЕЛЬНО на два источника: исходную идею и конкретные ответы автора из опроса.
 
-СТРУКТУРА ОТВЕТА:
-- 📌 **Резюме идеи и концепция** (краткая выжимка того, что создается)
-- ⚙️ **Архитектурные требования и стек** (конкретные технологии, фреймворки, методы)
-- 📋 **Спецификация логики и механик** (пошагово: структуры данных, функции, события, расчеты, UI/эффекты)
-- 🛡 **Пограничные сценарии и обработка ошибок (Edge Cases)**
-- 🚀 **Готовый промпт для автономного агента** (в блоке \`\`\`markdown ... \`\`\`)`,
+СТРОГИЙ ФОРМАТ ВЫВОДА:
+В самой первой строке ОБЯЗАТЕЛЬНО укажи заголовок:
+TITLE: <Краткое название идеи (3-6 слов)>
+
+Затем структурированный текст:
+💡 **Суть идеи** (2-3 емких предложения: ключевая цель и назначение фичи).
+🎯 **Согласованные детали** (список принятых решений из вопросов автора: механика, правила, логика).
+❓ **Открытые развилки** (то, что намеренно оставлено на усмотрение реализации/агента).
+📋 **Задание для автономного агента** (внутри блока \`\`\`markdown ... \`\`\`):
+  - Контекст и задача (User Story).
+  - Требования к поведению (Functional Requirements).
+  - Критерии готовности (Acceptance Criteria).`,
       },
       {
         role: 'user' as const,
@@ -296,7 +436,7 @@ ${historyText ? `Уже уточненные детали:\n${historyText}\n\n` 
 Уточненные детали и выбор автора:
 ${summaryClarifications || 'Детали согласованы автором по умолчанию.'}
 
-Сформируй полное техническое задание и готовый к копированию промпт для агента.`,
+Сформируй структурированную заметку и готовый к копированию промпт для агента.`,
       },
     ];
 
@@ -309,10 +449,22 @@ ${summaryClarifications || 'Детали согласованы автором �
         providerName
       );
 
-      return response.content;
+      let cleanContent = response.content.trim();
+      let title = session.rawIdea.slice(0, 40);
+
+      const titleMatch = cleanContent.match(/^TITLE:\s*(.+)$/m);
+      if (titleMatch) {
+        title = titleMatch[1].trim();
+        cleanContent = cleanContent.replace(/^TITLE:\s*.+\r?\n+/m, '').trim();
+      }
+
+      return { title, content: cleanContent };
     } catch (err) {
       logger.error(`Error generating final agent prompt: ${err instanceof Error ? err.message : String(err)}`);
-      return `❌ Не удалось сгенерировать итоговое ТЗ: ${err instanceof Error ? err.message : String(err)}`;
+      return {
+        title: session.rawIdea.slice(0, 40),
+        content: `❌ Не удалось сгенерировать итоговое ТЗ: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   }
 }

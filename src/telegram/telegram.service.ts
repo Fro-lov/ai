@@ -9,7 +9,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { TelegramMessageContext } from './telegram.types';
 import { ArgonProvider } from '../ai';
-import { NoteService, NoteQuestionResponse } from '../notes';
+import { NoteService, NoteQuestionResponse, IdeaRecord } from '../notes';
 
 export class TelegramService {
   private bot: Bot;
@@ -63,13 +63,15 @@ export class TelegramService {
     this.bot.command('status', this.handleStatus.bind(this));
     this.bot.command('note', this.handleNote.bind(this));
     this.bot.command('cancel_note', this.handleCancelNote.bind(this));
+    this.bot.command('ideas', this.handleIdeasCommand.bind(this));
+    this.bot.command('notes', this.handleIdeasCommand.bind(this));
     this.bot.command('argon', this.handleArgon.bind(this));
     this.bot.command('cookies', this.handleCookies.bind(this));
     this.bot.command('model', this.handleModel.bind(this));
     this.bot.command('getfile', this.handleGetFile.bind(this));
 
     // Handle interactive note inline button callbacks
-    this.bot.callbackQuery(/^note:(opt:[1-3]|finish|cancel)$/, this.handleNoteCallback.bind(this));
+    this.bot.callbackQuery(/^note:(opt:[1-3]|finish|cancel|view:\d+)$/, this.handleNoteCallback.bind(this));
 
     // Handle text messages
     this.bot.on('message:text', async (ctx, next) => {
@@ -158,23 +160,25 @@ export class TelegramService {
     return `telegram:${chatId}`;
   }
 
-  private async sendLongMessage(ctx: Context, text: string): Promise<void> {
+  private async sendLongMessage(ctx: Context, text: string): Promise<number | undefined> {
     const formattedText = this.formatterService.format(text, 'telegram');
     const MAX_LENGTH = 4096; // Telegram message limit
+    let firstMessageId: number | undefined;
 
-    const sendChunk = async (chunk: string) => {
+    const sendChunk = async (chunk: string): Promise<number | undefined> => {
       try {
-        await ctx.reply(chunk, { parse_mode: 'HTML' });
+        const msg = await ctx.reply(chunk, { parse_mode: 'HTML' });
+        return msg.message_id;
       } catch (err) {
         logger.warn(`Failed to send HTML message chunk, falling back to plain text: ${err instanceof Error ? err.message : String(err)}`);
         const plainText = this.formatterService.format(chunk, 'plaintext');
-        await ctx.reply(plainText);
+        const msg = await ctx.reply(plainText);
+        return msg.message_id;
       }
     };
 
     if (formattedText.length <= MAX_LENGTH) {
-      await sendChunk(formattedText);
-      return;
+      return await sendChunk(formattedText);
     }
 
     // Split message into chunks
@@ -205,8 +209,13 @@ export class TelegramService {
 
     // Send chunks
     for (const chunk of chunks) {
-      await sendChunk(chunk);
+      const id = await sendChunk(chunk);
+      if (!firstMessageId && id) {
+        firstMessageId = id;
+      }
     }
+
+    return firstMessageId;
   }
 
   private async handleStart(ctx: Context): Promise<void> {
@@ -293,6 +302,7 @@ export class TelegramService {
     if (this.isAdmin(userId)) {
       message += `\n\n⚡ <b>Команды Администратора:</b>
 /note &lt;идея&gt; - Интерактивная распаковка идеи в ТЗ для агента
+/ideas - Список всех сохраненных идей в PostgreSQL
 /cancel_note - Отменить текущую сессию идеи
 /argon &lt;задача&gt; - Запуск автономного агента в /workspace
 /getfile &lt;путь&gt; - Скачать файл из /workspace в Telegram
@@ -711,6 +721,35 @@ export class TelegramService {
     const data = ctx.callbackQuery?.data;
     if (!data) return;
 
+    // 1. Handling viewing full idea from /ideas list
+    const viewMatch = data.match(/^note:view:(\d+)$/);
+    if (viewMatch) {
+      const ideaId = parseInt(viewMatch[1], 10);
+      await ctx.answerCallbackQuery().catch(() => {});
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+      } catch {}
+
+      const idea = await this.noteService.getIdeaRepository().getIdeaById(ideaId);
+      if (!idea) {
+        await ctx.reply('⚠️ Идея не найдена в базе данных.');
+        return;
+      }
+
+      await ctx.reply(
+        `📋 <b>Идея #${idea.id}: ${idea.title}</b> [<code>${idea.projectId}</code>]\n` +
+        `📅 <i>Создано: ${idea.createdAt.toLocaleDateString('ru-RU')} ${idea.createdAt.toLocaleTimeString('ru-RU')}</i>\n` +
+        `💡 <i>Чтобы внести правки, ответьте (reply) на сообщение ниже:</i>`,
+        { parse_mode: 'HTML' }
+      );
+
+      const msgId = await this.sendLongMessage(ctx, idea.specification);
+      if (msgId) {
+        await this.noteService.getIdeaRepository().linkTelegramMessage(idea.id, msgId, chatId);
+      }
+      return;
+    }
+
     if (!this.noteService.hasActiveSession(userId)) {
       await ctx.answerCallbackQuery({ text: 'Сессия заметок уже завершена' }).catch(() => {});
       try {
@@ -738,8 +777,11 @@ export class TelegramService {
       try {
         await ctx.api.sendChatAction(chatId, 'typing');
         const selectedProvider = this.userSelectedProvider.get(userId) || env.AI_DEFAULT_PROVIDER;
-        const resultPrompt = await this.noteService.finalizeSession(userId, selectedProvider);
-        await this.sendLongMessage(ctx, resultPrompt);
+        const res = await this.noteService.finalizeSession(userId, selectedProvider);
+        const sentMsgId = await this.sendLongMessage(ctx, res.agentPrompt);
+        if (res.ideaId && sentMsgId) {
+          await this.noteService.getIdeaRepository().linkTelegramMessage(res.ideaId, sentMsgId, chatId);
+        }
       } catch (err) {
         logger.error(`Error finalizing note session: ${err instanceof Error ? err.message : String(err)}`);
         await ctx.reply(`❌ Ошибка генерации ТЗ: ${err instanceof Error ? err.message : String(err)}`);
@@ -773,7 +815,10 @@ export class TelegramService {
         const res = await this.noteService.answerCurrentQuestion(userId, optionNum, selectedProvider);
 
         if (res.isFinished && res.agentPrompt) {
-          await this.sendLongMessage(ctx, res.agentPrompt);
+          const sentMsgId = await this.sendLongMessage(ctx, res.agentPrompt);
+          if (res.ideaId && sentMsgId) {
+            await this.noteService.getIdeaRepository().linkTelegramMessage(res.ideaId, sentMsgId, chatId);
+          }
         } else if (res.nextQuestion) {
           await this.sendNoteQuestionMessage(ctx, userId, res.nextQuestion, currentStep + 1, maxSteps);
         }
@@ -815,7 +860,10 @@ export class TelegramService {
       const res = await this.noteService.answerCurrentQuestion(userId, userText, selectedProvider);
 
       if (res.isFinished && res.agentPrompt) {
-        await this.sendLongMessage(ctx, res.agentPrompt);
+        const sentMsgId = await this.sendLongMessage(ctx, res.agentPrompt);
+        if (res.ideaId && sentMsgId) {
+          await this.noteService.getIdeaRepository().linkTelegramMessage(res.ideaId, sentMsgId, chatId);
+        }
       } else if (res.nextQuestion) {
         await this.sendNoteQuestionMessage(ctx, userId, res.nextQuestion, currentStep + 1, maxSteps);
       }
@@ -825,6 +873,99 @@ export class TelegramService {
     } finally {
       try {
         await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+      } catch {}
+    }
+  }
+
+  private async handleIdeasCommand(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!userId || !this.isAdmin(userId)) {
+      await ctx.reply('⛔ Доступ к списку идей доступен только администратору.');
+      return;
+    }
+
+    try {
+      const ideas = await this.noteService.getIdeaRepository().getUserIdeas(userId, 10);
+      if (ideas.length === 0) {
+        await ctx.reply(
+          '📭 <b>У вас пока нет сохраненных идей в базе данных.</b>\n\n' +
+          'Чтобы записать и распаковать новую идею, отправьте:\n' +
+          '<code>/note &lt;описание идеи&gt;</code>',
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      let text = `📚 <b>Ваши сохраненные идеи (${ideas.length}):</b>\n\n`;
+      const keyboard = new InlineKeyboard();
+
+      ideas.forEach((idea, idx) => {
+        const num = idx + 1;
+        const dateStr = idea.createdAt.toLocaleDateString('ru-RU');
+        text += `<b>${num}.</b> 💡 <b>${idea.title}</b> [<code>${idea.projectId}</code>] (<i>${dateStr}</i>)\n`;
+        text += `   📝 <i>${idea.rawIdea.slice(0, 60)}${idea.rawIdea.length > 60 ? '...' : ''}</i>\n\n`;
+
+        keyboard.text(`${num}️⃣`, `note:view:${idea.id}`);
+        if ((idx + 1) % 4 === 0) {
+          keyboard.row();
+        }
+      });
+
+      text += `<i>Нажмите кнопку с номером идеи ниже, чтобы развернуть её целиком:</i>`;
+
+      await ctx.reply(text, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch (err) {
+      logger.error(`Error in /ideas command: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply(`❌ Не удалось получить список идей: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async handleIdeaAmendment(
+    ctx: Context,
+    idea: IdeaRecord,
+    amendmentText: string
+  ): Promise<void> {
+    const statusMsg = await ctx.reply('✏️ <i>Обновляю идею и ТЗ с учетом ваших правок...</i>', { parse_mode: 'HTML' });
+    try {
+      await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
+      const selectedProvider = this.userSelectedProvider.get(ctx.from!.id) || env.AI_DEFAULT_PROVIDER;
+      const { updatedContent, updatedTitle } = await this.noteService.amendIdea(idea.id, amendmentText, selectedProvider);
+
+      let edited = false;
+      if (idea.telegramMessageId && ctx.chat?.id) {
+        try {
+          const formatted = this.formatterService.format(updatedContent, 'telegram');
+          if (formatted.length <= 4096) {
+            await ctx.api.editMessageText(ctx.chat.id, idea.telegramMessageId, formatted, { parse_mode: 'HTML' });
+            edited = true;
+          }
+        } catch (editErr) {
+          logger.warn(`Could not edit message in place: ${editErr}`);
+        }
+      }
+
+      if (edited) {
+        await ctx.reply(
+          `✅ <b>Идея «${updatedTitle || idea.title}» успешно обновлена в сообщении выше!</b>\n\n` +
+          `💡 <i>Чтобы внести еще правки, просто ответьте (reply) на это или исходное сообщение.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      } else {
+        await ctx.reply(`✅ <b>Идея «${updatedTitle || idea.title}» обновлена:</b>`, { parse_mode: 'HTML' });
+        const newMsgId = await this.sendLongMessage(ctx, updatedContent);
+        if (newMsgId && ctx.chat?.id) {
+          await this.noteService.getIdeaRepository().linkTelegramMessage(idea.id, newMsgId, ctx.chat.id);
+        }
+      }
+    } catch (err) {
+      logger.error(`Error amending idea: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply(`❌ Сбой при внесении правок: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
       } catch {}
     }
   }
@@ -851,6 +992,17 @@ export class TelegramService {
       if (!cleanedText.startsWith('/')) {
         await this.handleNoteTextAnswer(ctx, context, cleanedText);
         return;
+      }
+    }
+
+    // Intercept if admin is replying to an existing idea message to edit/amend it
+    if (this.isAdmin(context.userId) && context.isReplyToBot && context.replyToMessageId) {
+      if (!cleanedText.startsWith('/')) {
+        const linkedIdea = await this.noteService.getIdeaRepository().getIdeaByMessageId(context.chatId, context.replyToMessageId);
+        if (linkedIdea) {
+          await this.handleIdeaAmendment(ctx, linkedIdea, cleanedText);
+          return;
+        }
       }
     }
 
@@ -957,6 +1109,7 @@ export class TelegramService {
       { command: 'start', description: 'Начать работу' },
       { command: 'help', description: 'Список команд' },
       { command: 'note', description: 'Распаковать идею в ТЗ для агента' },
+      { command: 'ideas', description: 'Список сохраненных идей' },
       { command: 'cancel_note', description: 'Отменить сессию идеи' },
       { command: 'status', description: 'Состояние хаба и сессий' },
       { command: 'model', description: 'Переключить модель (groq/argon)' },

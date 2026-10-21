@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "test": "tsx --test tests/**/*.test.ts",
     "lint": "eslint src --ext .ts",
-    "index:obsidian": "tsx scripts/index-obsidian.ts"
+    "index:obsidian": "tsx scripts/index-obsidian.ts",
+    "migrate:postgres": "tsx scripts/migrate-to-postgres.ts"
   },
   "keywords": [
     "ai",
@@ -30,11 +31,13 @@
     "groq-sdk": "^0.5.0",
     "mysql2": "^3.24.4",
     "onnxruntime-node": "^1.30.0",
+    "pg": "^8.23.1",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",

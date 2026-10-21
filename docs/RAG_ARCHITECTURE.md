@@ -1,92 +1,107 @@
 # 🧠 RAG & Vector Search Architecture (`onter-ai`)
 
-Модуль локального векторного поиска (Retrieval-Augmented Generation) позволяет `onter-ai` использовать ваши заметки из **Obsidian** (инструкции, рецепты майнкрафта, IP-адреса, конфигурации) для формирования 100% точных ответов на базе фактов.
+Модуль локального векторного поиска (Retrieval-Augmented Generation) позволяет `onter-ai` использовать ваши заметки из **Obsidian** (инструкции, рецепты майнкрафта, механики FiveM, правила и конфигурации) для формирования 100% точных ответов на базе фактов с нулевыми галлюцинациями.
 
 ---
 
 ## 🏗️ Архитектура системы
 
-Схема работы разделена на два независимых процесса: **Индексация (на ПК)** и **Поиск (на VPS/Сервере)**.
+Система построена на разделении на два контура: **Индексация (ПК разработчика)** и **Быстрый поиск (Хостинг / Сервер)**.
 
 ```text
-[ ЛОКАЛЬНЫЙ ПК ]
-  1. Заметки Obsidian (E:\obsidian\Onter)
-  2. MarkdownChunker (нарезка по заголовкам #, ##, ###)
-  3. EmbeddingService (локальная ONNX-модель Xenova/multilingual-e5-small)
-  4. VectorRepository (сохранение векторов в MySQL LONGBLOB / local JSON)
+[ ЛОКАЛЬНЫЙ ПК РАЗРАБОТЧИКА ]
+  1. Заметки Obsidian (E:\obsidian\Onter\DB)
+     ├── minecraft/    -> project_id: "minecraft"
+     ├── fivem/        -> project_id: "fivem"
+     ├── scrap/        -> project_id: "scrap_evolution"
+     └── common/       -> project_id: "general"
+  2. MarkdownChunker: нарезка файлов по заголовкам (#, ##, ###)
+  3. EmbeddingService: локальная генерация эмбеддингов (ONNX Xenova/multilingual-e5-small, 384 dim)
+  4. Сохранение чанков в базу данных или передача на сервер
 
-[ VPS / СЕРВЕР ]
-  1. Пользователь отправляет вопрос через /api/chat или Telegram
-  2. EmbeddingService переводит вопрос в вектор на CPU (~20 мс)
-  3. VectorRepository загружает векторы и находит топ-3 близких чанка (Cosine Similarity)
-  4. Векторный контекст подставляется в System Prompt
-  5. Groq LLM генерирует финальный фактологический ответ
+[ VPS / ХОСТИНГ СЕРВЕР (Oracle Cloud ARM64) ]
+  1. Игрок или пользователь присылает вопрос (с projectId: "minecraft" или "fivem")
+  2. EmbeddingService переводит вопрос в вектор за ~15–20 мс
+  3. Векторный запрос в PostgreSQL (pgvector HNSW индекс):
+     SELECT * FROM knowledge_chunks 
+     WHERE project_id IN ($projectId, 'general')
+     ORDER BY embedding <=> $queryEmbedding LIMIT 5;
+  4. База данных за 2–5 мс возвращает только наиболее релевантные чанки
+  5. Чанки инжектируются в System Prompt LLM модели
+  6. Модель отвечает со 100% точностью по правилам сервера
 ```
 
 ---
 
-## 🗄️ Схема Базы Данных (MySQL / MariaDB)
+## 🗄️ Схема Базы Данных (PostgreSQL 16 + pgvector)
 
-Векторы хранятся в таблице `knowledge_chunks`:
+Таблица векторных чанков:
 
 ```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS knowledge_chunks (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  file_path VARCHAR(255) NOT NULL,    -- Путь к заметке (напр. "projects/Minecraft.md")
-  header VARCHAR(255),                 -- Заголовок секции (напр. "### Рецепт Турбины")
-  content TEXT NOT NULL,               -- Текст чанка
-  embedding LONGBLOB NOT NULL,         -- Бинарный вектор (Float32Array, 384 измерения)
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_file (file_path)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  id SERIAL PRIMARY KEY,
+  project_id VARCHAR(50) NOT NULL DEFAULT 'general',
+  file_path VARCHAR(255) NOT NULL,
+  header VARCHAR(255),
+  content TEXT NOT NULL,
+  embedding vector(384) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Индекс для мгновенной фильтрации по проекту
+CREATE INDEX IF NOT EXISTS idx_chunks_project ON knowledge_chunks(project_id);
+
+-- Индекс HNSW для приближенного векторного поиска по косинусному сходству
+CREATE INDEX IF NOT EXISTS idx_chunks_vector 
+ON knowledge_chunks 
+USING hnsw (embedding vector_cosine_ops);
 ```
 
-> **Фоллбэк режим (Fallback):** Если переменные `MYSQL_HOST` не заданы в `.env` или MySQL недоступен, система автоматически переключается на файл `data/knowledge_chunks.json` без падения сервера.
+Таблица сессий и истории диалогов:
+
+```sql
+CREATE TABLE IF NOT EXISTS conversations (
+  id VARCHAR(100) PRIMARY KEY,                  -- Напр. "mc:PlayerNick" или "tg:12345678"
+  project_id VARCHAR(50) NOT NULL DEFAULT 'general',
+  messages JSONB NOT NULL DEFAULT '[]'::jsonb,  -- Скользящее окно из 10 сообщений
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id);
+```
 
 ---
 
-## 🚀 Команды для использования
+## 🛡️ Изоляция проектов (`projectId`)
 
-### 1. Индексация заметок Obsidian (на ПК)
+Благодаря предварительной фильтрации (Pre-Filtering):
+* Запросы от сервера **Minecraft** ищут чанки только со статусом `project_id IN ('minecraft', 'general')`. Чанки FiveM физически отсекаются на уровне базы данных.
+* Запросы от **FiveM** видят только данные `fivem` и `general`.
+* Документы из категории `general` (общие правила проекта, регламент администрации, донат) доступны обоим направлениям.
 
-Для запуска векторизации и сохранения заметок в базу данных выполните команду:
+---
 
+## 🚀 Команды управления RAG
+
+### 1. Индексация заметок (ПК)
 ```bash
+# Обычная доиндексация
 npm run index:obsidian
-```
 
-Вы также можете передать кастомный путь к хранилищу Obsidian или сбросить индекс перед загрузкой:
-
-```bash
-# Индексация с предварительной очисткой базы
+# Очистить всю базу и переиндексировать заново
 npm run index:obsidian -- --clear
-
-# Указание кастомной папки
-npm run index:obsidian "E:\obsidian\Onter\projects"
 ```
 
----
-
-## ⚙️ Конфигурация в `.env`
-
-Добавьте в `.env` реквизиты вашей MariaDB / MySQL (опционально):
-
-```env
-# Опционально: Настройки MySQL для векторного хранения
-MYSQL_HOST=85.17.118.39
-MYSQL_PORT=3306
-MYSQL_USER=vpn_user
-MYSQL_PASSWORD=your_password
-MYSQL_DATABASE=onter_ai
-
-# Путь к Obsidian (для ПК)
-OBSIDIAN_PATH=E:\obsidian\Onter
+### 2. Миграция данных в PostgreSQL
+```bash
+npm run migrate:postgres
 ```
 
----
-
-## 🧬 Технические детали векторизации
-
-1. **Модель эмбеддингов**: `Xenova/multilingual-e5-small` (384 измерений).
-2. **Форматирование E5**: Для документов используется префикс `passage: `, а для запросов — `query: `.
-3. **Метод измерения сходства**: Косинусное сходство (Cosine Similarity). Значения от `0.0` до `1.0`. Чанки с релевантностью ниже `0.4` отсекаются.
+Скрипт автоматически:
+1. Забирает данные из MariaDB или файла `data/knowledge_chunks.json`.
+2. Автоматически проставляет `project_id` по путям файлов.
+3. Пакетно загружает все 3 871+ чанков в PostgreSQL.
+4. Создает и проверяет HNSW индекс.

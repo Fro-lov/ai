@@ -1,343 +1,171 @@
 # onter-ai
 
-onter-ai — backend AI service для использования в нескольких проектах.
+**onter-ai** — единый бэкенд-сервис искусственного интеллекта и базы знаний (RAG) для экосистемы игровых и комьюнити-проектов Onter (Minecraft, FiveM, Scrap Evolution, Telegram, Discord, Web).
 
-## Что это
+---
 
-Backend-сервис, предоставляющий единый AI API для различных проектов. На текущем этапе поддерживает интеграцию с Groq API.
+## 🎯 Основная среда и целевая инфраструктура
 
-## Текущие возможности
+* **Основная среда развертывания (Production)**: Удаленный Linux-сервер **Oracle Cloud (ARM64)**, рабочая директория `/opt/onter-ai`.
+* **CI/CD Автодеплой**: Настроен через GitHub Actions Self-Hosted Runner (`.github/workflows/deploy.yml`). При пуше в ветку `main` сервис автоматически обновляется, собирается и перезапускается.
+* **Локальная среда (Dev)**: Используется для разработки, отладки и векторизации локальных заметок Obsidian (`E:\obsidian\Onter\DB`).
 
-- `POST /api/chat` — отправка сообщений AI
-- Мульти-провайдерная архитектура AI
-- Groq provider (подключён)
-- System prompt
-- Выбор провайдера и модели
-- Telegram Bot интеграция
-- Conversation history (в памяти)
-- Health endpoint
-- Docker поддержка
+---
 
-## Технологии
+## 🚀 Возможности системы
 
-- Node.js
-- TypeScript
-- Fastify
-- Zod
-- Groq SDK
-- grammY (Telegram Bot)
-- Docker
+### 1. Мульти-провайдерная AI архитектура
+* **Groq API**: Сверхбыстрый инференс открытых моделей (Llama 3.3, Mixtral, Qwen).
+* **Argon Engine (Gemini 4 Web Session)**: Внутренний агентный движок с автономным исполнителем задач в `/workspace`, поддержкой файлов и выполнения shell-команд.
+* **OpenRouter Ready**: Архитектура готова к подключению единого шлюза бесплатных моделей (`:free`).
 
-## Запуск
+### 2. Мультипроектный RAG (Изоляция баз знаний)
+* **Pre-Filtering по `projectId`**: Запросы разделяются по проектам (`minecraft`, `fivem`, `scrap_evolution`, `general`). Игроки Minecraft гарантированно не получают контекст FiveM и наоборот.
+* **Векторная БД PostgreSQL + `pgvector`**: Нативный HNSW векторный индекс (Cosine Similarity) прямо в СУБД. Поиск за 2–5 мс без выгрузки чанков в оперативную память Node.js.
+* **Мягкий фоллбэк**: Если PostgreSQL временно недоступен, сервис плавно переключается на MariaDB или локальный `data/knowledge_chunks.json`.
+* **Локальные ONNX-эмбеддинги**: Модель `Xenova/multilingual-e5-small` генерирует 384-мерные векторы локально на CPU без затрат на внешние API.
 
-### Установка зависимостей
+### 3. Форматирование под игровые и мессенджер-каналы
+* **Minecraft Formatter**: Очистка Markdown, объединение в одну строку с разделителем ` | ` для вывода в чат игры.
+* **Discord Formatter**: Сохранение форматирования блоков кода, спойлеров и цитат.
+* **Telegram Formatter**: Поддержка безопасного экранирования HTML/MarkdownV2.
+* **Plaintext Formatter**: Чистый текст для NUI интерфейсов и консолей.
 
+### 4. Telegram Bot
+* Поддержка личных чатов и групп (с учетом Telegram Privacy Mode).
+* Скользящее окно истории диалога (`CONVERSATION_HISTORY_LIMIT=10`).
+* Команды: `/start`, `/help`, `/reset`, `/context`, `/limits`, `/history`.
+
+### 5. Admin & Health API
+* `GET /health` — проверка состояния сервиса.
+* `GET /api/admin/system/status` — системный статус, аптайм, память, активные провайдеры.
+* `GET /api/admin/rag/status` — количество проиндексированных чанков и текущее хранилище (PostgreSQL / MySQL / JSON).
+* `GET /api/admin/limits` — квоты и лимиты текущего AI провайдера.
+
+---
+
+## 🛠️ Стек технологий
+
+* **Runtime**: Node.js (v20+ LTS) & TypeScript
+* **HTTP Framework**: Fastify + Zod (строгая валидация схем)
+* **Векторная БД**: PostgreSQL 16 с расширением `pgvector` (HNSW) в Docker
+* **Эмбеддинги**: `@xenova/transformers` (ONNX Runtime)
+* **Боты**: grammY (Telegram Bot Framework)
+* **Инференс**: `groq-sdk`, внутренний `Argon Engine` (FastAPI / Gemini Web API)
+
+---
+
+## 🐘 Развертывание PostgreSQL + pgvector на сервере
+
+На хостинге предусмотрен скрипт автоматической установки, который сам ставит Docker, запускает `pgvector/pgvector:pg16`, мигрирует все данные и отключает устаревшую MariaDB.
+
+### Быстрый запуск на хостинге:
+
+Зайдите по SSH на сервер и выполните команду:
+
+```bash
+sudo bash scripts/setup-docker-postgres.sh
+```
+
+### Что делает скрипт:
+1. Проверяет и при необходимости устанавливает Docker и Docker Compose (поддерживается ARM64 Oracle Cloud).
+2. Поднимает контейнер `onter-postgres` с расширением `pgvector`.
+3. Запускает `npm run migrate:postgres` — переносит все 3 871+ чанков из MariaDB/JSON в PostgreSQL, автоматически распределяя `projectId`.
+4. Создает таблицы сессий диалогов и HNSW индекс.
+5. Безопасно останавливает и отключает старую службу MariaDB (`systemctl disable --now mariadb`).
+6. Перезапускает службу `onter-ai`.
+
+---
+
+## 💻 Локальная разработка (Dev)
+
+### 1. Установка зависимостей
 ```bash
 npm install
 ```
 
-### Настройка окружения
-
-Создайте файл `.env` на основе `.env.example`:
-
+### 2. Настройка `.env`
+Скопируйте пример окружения:
 ```bash
 cp .env.example .env
 ```
-
-Заполните обязательные переменные:
-
+Заполните ключи:
 ```env
-GROQ_API_KEY=your_api_key_here
+PORT=3001
+GROQ_API_KEY=gsk_...
 AI_DEFAULT_PROVIDER=groq
-GROQ_MODEL=llama-3.1-8b-instant
+AI_SYSTEM_PROMPT="..."
+
+# Опционально: подключение к PostgreSQL
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+POSTGRES_USER=onter_ai
+POSTGRES_PASSWORD=onter_pg_pass_2026
+POSTGRES_DB=onter_ai
 ```
 
-### Разработка
-
+### 3. Запуск сервера в режиме разработки
 ```bash
 npm run dev
 ```
 
-Сервис будет доступен по адресу: `http://localhost:3001`
-
-### Telegram Bot (опционально)
-
-Для включения Telegram Bot:
-
-1. Получите токен бота у [@BotFather](https://t.me/botfather) в Telegram
-2. Добавьте в `.env`:
-
-```env
-TELEGRAM_ENABLED=true
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_SYSTEM_PROMPT=You are a helpful AI assistant.
-CONVERSATION_HISTORY_LIMIT=10
-```
-
-3. Запустите сервис:
-
+### 4. Индексация базы знаний Obsidian (на ПК)
 ```bash
-npm run dev
+# Индексировать хранилище
+npm run index:obsidian
+
+# Очистить индекс и заново переиндексировать
+npm run index:obsidian -- --clear
 ```
 
-Бот будет автоматически запущен при старте сервера.
+---
 
-### Production
+## 📡 Примеры API
 
-```bash
-npm run build
-npm run start
-```
-
-## Пример запроса
-
-### Health check
-
-```bash
-curl http://localhost:3001/health
-```
-
-Ответ:
-
-```json
-{
-  "status": "ok",
-  "service": "onter-ai"
-}
-```
-
-### Chat endpoint
-
-#### Простое сообщение (использует default provider)
-
-```bash
-curl -X POST http://localhost:3001/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Привет"}'
-```
-
-#### С указанием провайдера
+### Chat Endpoint (`POST /api/chat`)
 
 ```bash
 curl -X POST http://localhost:3001/api/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "Привет",
-    "provider": "groq"
-  }'
-```
-
-#### С указанием модели
-
-```bash
-curl -X POST http://localhost:3001/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Объясни TypeScript",
-    "provider": "groq",
-    "model": "llama-3.1-8b-instant"
-  }'
-```
-
-#### С system prompt
-
-```bash
-curl -X POST http://localhost:3001/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Объясни TypeScript",
-    "systemPrompt": "Отвечай кратко.",
+    "message": "Как получить нейтроний на скайблоке?",
+    "projectId": "minecraft",
     "provider": "groq"
   }'
 ```
 
 Ответ:
-
 ```json
 {
-  "content": "AI response here",
-  "model": "llama-3.1-8b-instant"
+  "content": "Для получения нейтрония на ATM10 Skyblock используется нейтронный компрессор...",
+  "model": "llama-3.3-70b-versatile"
 }
 ```
 
-### Telegram Bot команды
+---
 
-- `/start` — Начать работу и узнать как взаимодействовать (различается для личных чатов и групп)
-- `/help` — Показать список команд
-- `/reset` — Очистить историю диалога
-- `/context` — Показать информацию о текущем диалоге
-- `/limits` — Показать информацию о лимитах AI provider
-- `/history` — Показать всю историю диалога в виде текста
+## 📁 Структура проекта
 
-### Telegram Bot поведение
-
-**В личных чатах:**
-- Бот отвечает на все сообщения
-
-**В группах:**
-- Бот отвечает только если его упомянули (@botname)
-- Бот отвечает если сообщение является reply на сообщение бота
-- При упоминании бота, упоминание удаляется из текста перед отправкой в AI
-
-### Telegram Privacy Mode
-
-Бот работает с Telegram Privacy Mode без необходимости отключать его. Для работы в группах:
-
-1. Добавьте бота в группу
-2. Используйте `@bot_username вопрос` или ответьте (reply) на сообщение бота
-
-Если Privacy Mode влияет на уже добавленного бота после изменения настроек, возможно потребуется повторное добавление бота в группу.
-
-## Docker
-
-### Запуск через Docker Compose
-
-```bash
-docker compose up -d --build
+```text
+onter-ai/
+├── argon-engine/           # Внутренний агентный движок Argon (Python / Gemini Web API)
+├── data/                   # Локальные файлы и кэш (knowledge_chunks.json)
+├── docs/                   # Архитектурная документация (RAG_ARCHITECTURE.md)
+├── scripts/                # Скрипты развертывания и миграции
+│   ├── setup-docker-postgres.sh    # Автоустановка Docker + pgvector на сервере
+│   ├── migrate-to-postgres.ts      # Миграция RAG данных в PostgreSQL
+│   ├── index-obsidian.ts           # Индексатор Markdown заметок
+│   └── setup-runner.sh             # Скрипт настройки GitHub Actions Runner
+├── src/
+│   ├── ai/                 # Провайдеры (Groq, Argon, OpenRouter)
+│   ├── chat/               # ChatService и схемы запросов
+│   ├── config/             # Zod валидация окружения
+│   ├── conversation/       # Управление сессиями диалогов
+│   ├── formatter/          # Форматтеры каналов (Minecraft, Discord, Telegram)
+│   ├── routes/             # Fastify эндпоинты (chat, admin, health)
+│   ├── telegram/           # Telegram бот на grammY
+│   └── vector/             # RAG, Chunker, ONNX эмбеддинги, VectorRepository
+├── docker-compose.yml      # Конфигурация PostgreSQL (pgvector) и сервиса
+├── Dockerfile              # Сборка контейнера Node.js
+└── package.json
 ```
-
-### Проверка работоспособности
-
-```bash
-curl http://localhost:3001/health
-```
-
-## Архитектура
-
-### HTTP API
-
-```
-Client
-  ↓
-POST /api/chat
-  ↓
-Fastify Route (Zod validation)
-  ↓
-ChatService
-  ↓
-AIService (provider registry)
-  ↓
-AIProvider interface
-  ↓
-GroqProvider (или другие провайдеры)
-  ↓
-Groq API
-  ↓
-AI response
-```
-
-### Telegram Bot
-
-```
-Telegram
-  ↓
-Telegram Bot (grammY)
-  ↓
-Conversation Memory (in-memory)
-  ↓
-ChatService
-  ↓
-AIService
-  ↓
-AIProvider
-  ↓
-Groq API
-  ↓
-Telegram response
-```
-
-### Prompt Architecture
-
-Сервис использует многоуровневую систему промптов для формирования AI контекста:
-
-```
-Global Prompt
-    ↓
-Project Prompt (опционально)
-    ↓
-Conversation History
-    ↓
-Current User Message
-```
-
-**Global Prompt** (`AI_SYSTEM_PROMPT`):
-- Определяет общее поведение AI
-- Задаёт стиль мышления и принципы ответов
-- Управляет отношением к фактам и неопределённости
-- Обязателен для заполнения
-
-**Project Prompt** (`AI_PROJECT_PROMPT_*`):
-- Содержит факты о конкретном проекте
-- Технологии, версии, архитектура
-- Подтверждённые команды и API
-- Опциональный, используется при указании `projectId`
-
-**Conversation History**:
-- Хранит историю диалога
-- Передаётся как часть контекста
-- Ограничивается `CONVERSATION_HISTORY_LIMIT`
-
-### Переменные окружения
-
-**Основные:**
-- `GROQ_API_KEY` — API ключ для Groq
-- `AI_DEFAULT_PROVIDER` — провайдер по умолчанию (groq)
-- `GROQ_MODEL` — модель по умолчанию для Groq
-- `PORT` — порт сервера (3001)
-- `HOST` — хост сервера (0.0.0.0)
-
-**Prompts:**
-- `AI_SYSTEM_PROMPT` — глобальный промпт поведения AI (обязательный)
-- `AI_PROJECT_PROMPT_ONTER_AI` — контекст проекта onter-ai (опциональный)
-- `AI_PROJECT_PROMPT_MINECRAFT` — контекст проекта minecraft (опциональный)
-- `AI_PROJECT_PROMPT_SCRAP_EVOLUTION` — контекст проекта scrap-evolution (опциональный)
-
-**Telegram Bot:**
-- `TELEGRAM_ENABLED` — включить Telegram bot (true/false)
-- `TELEGRAM_BOT_TOKEN` — токен Telegram бота
-- `TELEGRAM_SYSTEM_PROMPT` — системный промпт для Telegram (устарел, используйте AI_SYSTEM_PROMPT)
-- `CONVERSATION_HISTORY_LIMIT` — лимит истории сообщений (10)
-
-**AI Settings:**
-- `AI_MAX_TOKENS` — максимальное количество токенов в ответе (800)
-
-### Обработка ошибок
-
-Сервис возвращает структурированные ошибки с кодами:
-
-- `VALIDATION_ERROR` — ошибка валидации запроса (400)
-- `PROVIDER_NOT_FOUND` — провайдер не найден (404)
-- `AI_PROVIDER_ERROR` — ошибка AI провайдера (502)
-- `INTERNAL_ERROR` — внутренняя ошибка сервера (500)
-
-### Groq Rate Limits
-
-Информация о лимитах Groq берётся из HTTP response headers API. Команда `/limits` в Telegram показывает доступные данные:
-
-- Remaining requests — оставшиеся запросы
-- Remaining tokens — оставшиеся токены
-- Reset requests — время сброса лимита запросов
-- Reset tokens — время сброса лимита токенов
-
-Эти значения относятся к конкретным лимитным окнам, предоставляемым Groq API. Не следует интерпретировать их как полный остаток месячной или дневной квоты без подтверждения соответствующим API полем.
-
-## Планы развития
-
-В будущем планируется добавить:
-
-1. PostgreSQL для хранения истории
-2. Система диалогов
-3. Проекты и контекст
-4. Task management
-5. Trello интеграция
-6. AI moderation
-7. Tools/function calling
-8. Другие AI providers (Gemini, OpenRouter)
-9. API для Minecraft/KubeJS и других сервисов
-
-## Скрипты
-
-- `npm run dev` — запуск в режиме разработки с hot-reload
-- `npm run build` — сборка TypeScript в JavaScript
-- `npm run start` — запуск production версии
-- `npm run lint` — проверка кода ESLint

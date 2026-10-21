@@ -13,7 +13,7 @@ export class ChatService {
   ) {}
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    logger.info('Chat request started');
+    logger.info(`Chat request started (project: ${request.projectId || 'none'})`);
 
     let messages: AIMessage[] = [];
 
@@ -37,27 +37,34 @@ export class ChatService {
     // Retrieve RAG context if RAGService is available
     if (this._ragService && request.message) {
       try {
-        const relevantChunks = await this._ragService.findRelevantChunks(request.message, 5, 0.25);
+        const relevantChunks = await this._ragService.findRelevantChunks(
+          request.message,
+          5,
+          0.25,
+          request.projectId
+        );
+
         if (relevantChunks.length > 0) {
-          logger.info(`=== [RAG DEBUG LOGS] Found ${relevantChunks.length} relevant chunks for query: "${request.message}" ===`);
+          logger.info(`=== [RAG DEBUG] Found ${relevantChunks.length} relevant chunks for query: "${request.message}" ===`);
           relevantChunks.forEach((c, i) => {
-            logger.info(`  [Chunk #${i + 1}] File: ${c.filePath} | Section: ${c.header} | Score: ${(c.score * 100).toFixed(1)}%`);
+            logger.info(`  [Chunk #${i + 1}] Project: ${c.projectId || 'general'} | File: ${c.filePath} | Score: ${(c.score * 100).toFixed(1)}%`);
           });
 
           const ragContext = relevantChunks
-            .map((c, i) => `--- [Чанк #${i + 1} | Файл: ${c.filePath} | Секция: ${c.header} | Релевантность: ${(c.score * 100).toFixed(1)}%] ---\n${c.content}`)
+            .map((c, i) => `--- [Чанк #${i + 1} | Проект: ${c.projectId || 'general'} | Файл: ${c.filePath} | Секция: ${c.header} | Релевантность: ${(c.score * 100).toFixed(1)}%] ---\n${c.content}`)
             .join('\n\n');
 
+          const projectName = request.projectId ? request.projectId.toUpperCase() : 'ОБЩИЕ ЗНАНИЯ';
           const ragSystemMessage: AIMessage = {
             role: 'system',
-            content: `[КРИТИЧЕСКИЙ КОНТЕКСТ СБОРКИ (OBSIDIAN / KUBEJS / ATM10)]
-Ниже приведены официальные конфигурации и факты о сборке ATM10 Skyblock из базы знаний.
+            content: `[КРИТИЧЕСКИЙ КОНТЕКСТ БАЗЫ ЗНАНИЙ (ПРОЕКТ: ${projectName})]
+Ниже приведены официальные конфигурации, правила и факты из базы знаний проекта ${projectName}.
 
 ПРАВИЛА И ПРИОРИТЕТ:
-1. Информация в данном контексте обладает 100% ПРИОРИТЕТОМ над твоими базовыми знаниями о Minecraft модах.
-2. Если в контексте написано, что предмет или рецепт УДАЛЕН ("Удален предмет/рецепт", "removals", "event.remove"), ты ОБЯЗАН отвечать, что данный предмет/рецепт УДАЛЕН на сервере/в сборке ATM10 Skyblock.
-3. Если пользователь спрашивает про общее КОЛИЧЕСТВО или ЧИСЛО модов, квестов или скриптов (например, "сколько всего модов"), используй готовую суммарную цифру из секций статистики (например, "В сборке 243 мода"). НЕ пытайся считать элементы вручную по частичным спискам!
-4. Не утверждай, что предмет существует, если в контексте написано, что он в списке удаленных.
+1. Информация в данном контексте обладает 100% ПРИОРИТЕТОМ над твоими базовыми знаниями о сторонних играх, модах и скриптах.
+2. Если в контексте написано, что предмет, команда, механика или рецепт УДАЛЕН ("Удален", "removals", "event.remove", "disabled"), ты ОБЯЗАН отвечать, что данная функция удалена/отключена на проекте.
+3. Если пользователь спрашивает про общее КОЛИЧЕСТВО или ЧИСЛО элементов (модов, правил, квестов), используй готовую суммарную цифру из секций статистики. НЕ пытайся считать элементы вручную по частичным фрагментам!
+4. Не додумывай несуществующие команды и API, опирайся строго на предоставленный контекст.
 
 ДАННЫЕ ИЗ БАЗЫ ЗНАНИЙ:
 ${ragContext}`,

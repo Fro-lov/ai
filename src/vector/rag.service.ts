@@ -10,6 +10,7 @@ export interface SearchResult {
   header: string;
   content: string;
   score: number;
+  projectId?: string;
 }
 
 export class RAGService {
@@ -29,6 +30,20 @@ export class RAGService {
       await this.repository.init();
       this.isInitialized = true;
     }
+  }
+
+  private detectProjectId(filePath: string): string {
+    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+    if (normalized.startsWith('minecraft/') || normalized.includes('minecraft') || normalized.includes('skyblock') || normalized.includes('atm10')) {
+      return 'minecraft';
+    }
+    if (normalized.startsWith('fivem/') || normalized.includes('fivem') || normalized.includes('gta')) {
+      return 'fivem';
+    }
+    if (normalized.startsWith('scrap/') || normalized.includes('scrap')) {
+      return 'scrap_evolution';
+    }
+    return 'general';
   }
 
   /**
@@ -54,12 +69,14 @@ export class RAGService {
 
       const chunks = this.chunker.chunkFile(fullPath, relativePath);
       const recordsToSave: ChunkRecord[] = [];
+      const projectId = this.detectProjectId(relativePath);
 
       for (const chunk of chunks) {
         // Generate embedding vector using local ONNX model
         const embedding = await this.embeddingService.generateEmbedding(chunk.content, false);
 
         recordsToSave.push({
+          projectId,
           filePath: chunk.filePath,
           header: chunk.header,
           content: chunk.content,
@@ -88,7 +105,7 @@ export class RAGService {
   /**
    * Returns statistics about vector storage (chunk count and storage type)
    */
-  async getStatus(): Promise<{ totalChunks: number; storage: 'mysql' | 'json'; error?: string }> {
+  async getStatus(): Promise<{ totalChunks: number; storage: 'postgres' | 'mysql' | 'json'; error?: string }> {
     await this.init();
     const res = await this.repository.getChunkCount();
     return {
@@ -99,36 +116,31 @@ export class RAGService {
   }
 
   /**
-   * Performs vector similarity search for a query and returns top-K relevant chunks
+   * Performs vector similarity search for a query and returns top-K relevant chunks,
+   * filtered by projectId (with fallback to 'general').
    */
-  async findRelevantChunks(query: string, topK = 3, minScore = 0.3): Promise<SearchResult[]> {
+  async findRelevantChunks(
+    query: string,
+    topK = 5,
+    minScore = 0.25,
+    projectId?: string
+  ): Promise<SearchResult[]> {
     await this.init();
 
     const queryEmbedding = await this.embeddingService.generateEmbedding(query, true);
-    const allChunks = await this.repository.getAllChunks();
+    const similarChunks = await this.repository.searchSimilar(queryEmbedding, topK, minScore, projectId);
 
-    if (allChunks.length === 0) {
-      logger.warn('Vector store is empty. No context retrieved.');
-      return [];
-    }
+    const results: SearchResult[] = similarChunks.map(chunk => ({
+      filePath: chunk.filePath,
+      header: chunk.header,
+      content: chunk.content,
+      score: chunk.score ?? 0,
+      projectId: chunk.projectId,
+    }));
 
-    const scoredResults: SearchResult[] = allChunks.map(chunk => {
-      const score = EmbeddingService.cosineSimilarity(queryEmbedding, chunk.embedding);
-      return {
-        filePath: chunk.filePath,
-        header: chunk.header,
-        content: chunk.content,
-        score,
-      };
-    });
-
-    // Filter by minScore and sort descending by similarity score
-    const results = scoredResults
-      .filter(res => res.score >= minScore)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
-
-    logger.info(`RAG search for "${query}": found ${results.length} relevant chunks (top score: ${results[0]?.score.toFixed(3) || 'none'}).`);
+    logger.info(
+      `RAG search for "${query}" [projectId: ${projectId || 'general'}]: found ${results.length} chunks (top score: ${results[0]?.score.toFixed(3) || 'none'}).`
+    );
     return results;
   }
 

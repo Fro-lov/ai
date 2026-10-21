@@ -158,7 +158,7 @@ export class VectorRepository {
         LIMIT $4;
       `, [vectorStr, targetProject, minScore, topK]);
 
-      return res.rows.map(row => ({
+      return res.rows.map((row: any) => ({
         id: row.id,
         projectId: row.project_id,
         filePath: row.file_path,
@@ -284,7 +284,7 @@ export class VectorRepository {
       const res = await this.pgPool.query(
         'SELECT id, project_id, file_path, header, content, embedding::text FROM knowledge_chunks'
       );
-      return res.rows.map(row => {
+      return res.rows.map((row: any) => {
         const raw = row.embedding as string;
         const embedding = raw.replace(/[\[\]]/g, '').split(',').map(Number);
         return {

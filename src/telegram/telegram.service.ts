@@ -10,6 +10,7 @@ import { logger } from '../utils/logger';
 import { TelegramMessageContext } from './telegram.types';
 import { ArgonProvider, AntigravityProvider } from '../ai';
 import { NoteService, NoteQuestionResponse, IdeaRecord } from '../notes';
+import { ChatSessionRepository, ChatSessionRecord } from '../conversation/chat-session.repository';
 
 export class TelegramService {
   private bot: Bot;
@@ -21,6 +22,7 @@ export class TelegramService {
   private argonProvider?: ArgonProvider;
   private antigravityProvider?: AntigravityProvider;
   private noteService: NoteService;
+  private chatSessionRepo: ChatSessionRepository;
   private userSelectedProvider: Map<number, string> = new Map();
 
   constructor(
@@ -31,7 +33,8 @@ export class TelegramService {
     formatterService: FormatterService = defaultFormatterService,
     argonProvider?: ArgonProvider,
     noteService?: NoteService,
-    antigravityProvider?: AntigravityProvider
+    antigravityProvider?: AntigravityProvider,
+    chatSessionRepo?: ChatSessionRepository
   ) {
     this.bot = new Bot(env.TELEGRAM_BOT_TOKEN!);
     this.conversationService = conversationService;
@@ -42,6 +45,7 @@ export class TelegramService {
     this.argonProvider = argonProvider;
     this.antigravityProvider = antigravityProvider;
     this.noteService = noteService || new NoteService(aiService);
+    this.chatSessionRepo = chatSessionRepo || new ChatSessionRepository();
 
     this.setupHandlers();
   }
@@ -64,6 +68,10 @@ export class TelegramService {
     this.bot.command('limits', this.handleLimits.bind(this));
     this.bot.command('history', this.handleHistory.bind(this));
     this.bot.command('status', this.handleStatus.bind(this));
+    this.bot.command('chats', this.handleChatsCommand.bind(this));
+    this.bot.command('dialogs', this.handleChatsCommand.bind(this));
+    this.bot.command('new', this.handleNewChatCommand.bind(this));
+    this.bot.command('rename', this.handleRenameChatCommand.bind(this));
     this.bot.command('note', this.handleNote.bind(this));
     this.bot.command('cancel_note', this.handleCancelNote.bind(this));
     this.bot.command('ideas', this.handleIdeasCommand.bind(this));
@@ -77,6 +85,8 @@ export class TelegramService {
 
     // Handle interactive note inline button callbacks
     this.bot.callbackQuery(/^note:(opt:[1-3]|finish|cancel|view:\d+)$/, this.handleNoteCallback.bind(this));
+    // Handle chat session selection callbacks
+    this.bot.callbackQuery(/^chat:(select:\d+|new)$/, this.handleChatCallback.bind(this));
 
     // Handle text messages
     this.bot.on('message:text', async (ctx, next) => {
@@ -223,6 +233,107 @@ export class TelegramService {
     return firstMessageId;
   }
 
+  private async handleChatsCommand(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    try {
+      const sessions = await this.chatSessionRepo.getSessions(userId);
+      const active = await this.chatSessionRepo.getActiveSession(userId);
+
+      let text = '💬 <b>Ваши диалоги (сессии):</b>\n\n';
+      text += 'Выберите активный диалог из списка ниже или создайте новый:\n';
+
+      const keyboard = new InlineKeyboard();
+      for (const s of sessions) {
+        const isCur = s.id === active.id;
+        const icon = isCur ? '🟢' : '💬';
+        const label = `${icon} ${s.title}`;
+        keyboard.text(label, `chat:select:${s.id}`).row();
+      }
+      keyboard.text('➕ Создать новый диалог', 'chat:new');
+
+      await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
+    } catch (err) {
+      logger.error(`Error in /chats command: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply('❌ Не удалось загрузить список диалогов.');
+    }
+  }
+
+  private async handleChatCallback(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    const data = ctx.callbackQuery?.data;
+    if (!userId || !data) return;
+
+    try {
+      if (data === 'chat:new') {
+        await ctx.answerCallbackQuery({ text: 'Создаю новый диалог...' }).catch(() => {});
+        const newSession = await this.chatSessionRepo.createSession(userId);
+        await ctx.editMessageText(
+          `✅ <b>Создан новый диалог: «${newSession.title}»</b>\n\nВсе последующие сообщения будут отправляться в эту отдельную ветку.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      const selectMatch = data.match(/^chat:select:(\d+)$/);
+      if (selectMatch) {
+        const sessionId = parseInt(selectMatch[1], 10);
+        const switched = await this.chatSessionRepo.setActiveSession(userId, sessionId);
+        await ctx.answerCallbackQuery({ text: `Выбран: ${switched?.title || 'Диалог'}` }).catch(() => {});
+        if (switched) {
+          await ctx.editMessageText(
+            `✅ <b>Активный диалог переключен на: «${switched.title}»</b>\n\nКонтекст переписки теперь привязан к этой ветке.`,
+            { parse_mode: 'HTML' }
+          );
+        }
+      }
+    } catch (err) {
+      logger.error(`Error in chat callback: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async handleNewChatCommand(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    const text = ctx.message?.text || '';
+    const customTitle = text.replace(/^\/new(@\w+)?/i, '').trim();
+
+    try {
+      const session = await this.chatSessionRepo.createSession(userId, customTitle || undefined);
+      await ctx.reply(
+        `✅ <b>Создан новый диалог: «${session.title}»</b>\n\nВсе последующие сообщения будут обрабатываться в этой отдельной ветке.`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      logger.error(`Error creating new chat: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply('❌ Ошибка создания нового диалога.');
+    }
+  }
+
+  private async handleRenameChatCommand(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    const text = ctx.message?.text || '';
+    const newTitle = text.replace(/^\/rename(@\w+)?/i, '').trim();
+
+    if (!newTitle) {
+      await ctx.reply('ℹ️ Использование: `/rename <новое название диалога>`\n\nПример: `/rename Разработка сайта`');
+      return;
+    }
+
+    try {
+      const active = await this.chatSessionRepo.getActiveSession(userId);
+      await this.chatSessionRepo.updateSession(active.id, { title: newTitle });
+      await ctx.reply(`✅ <b>Текущий диалог переименован в: «${newTitle}»</b>`, { parse_mode: 'HTML' });
+    } catch (err) {
+      logger.error(`Error renaming chat: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply('❌ Ошибка переименования диалога.');
+    }
+  }
+
   private async handleStart(ctx: Context): Promise<void> {
     const chatId = ctx.chat?.id;
     const chatType = ctx.chat?.type;
@@ -249,6 +360,15 @@ export class TelegramService {
     logger.info(`Telegram /reset command from chat: ${chatId}`);
     const conversationId = this.getConversationId(chatId);
     this.conversationService.reset(conversationId);
+
+    if (userId) {
+      try {
+        const active = await this.chatSessionRepo.getActiveSession(userId);
+        await this.chatSessionRepo.updateSession(active.id, { conversationId: '' });
+      } catch (sessionErr) {
+        logger.warn(`Could not reset session conversationId: ${sessionErr}`);
+      }
+    }
 
     if (this.isAdmin(userId) && this.argonProvider) {
       try {
@@ -298,7 +418,10 @@ export class TelegramService {
 
 /start - Начать работу и узнать как взаимодействовать
 /help - Показать список команд
-/reset - Очистить историю диалога
+/chats - Список ваших диалогов (сессий) и выбор
+/new [название] - Создать новый чистый диалог
+/rename &lt;название&gt; - Переименовать текущий диалог
+/reset - Очистить историю активного диалога
 /context - Показать информацию о текущем диалоге
 /limits - Показать информацию о лимитах AI
 /history - Показать недавнюю историю
@@ -1112,13 +1235,25 @@ export class TelegramService {
         ? (this.userSelectedProvider.get(context.userId) || env.AI_DEFAULT_PROVIDER)
         : env.AI_DEFAULT_PROVIDER;
 
+      // Get active session for user
+      const activeSession = await this.chatSessionRepo.getActiveSession(context.userId);
+
       // Get AI response with conversation history
       const response = await this.chatService.chat({
         message: cleanedText,
         messages: aiMessages,
         provider: selectedProvider,
         userId: context.userId ? context.userId.toString() : undefined,
+        conversationId: activeSession.conversationId || undefined,
       });
+
+      // Update Antigravity conversation ID if a new one was assigned
+      if (response.conversationId && response.conversationId !== activeSession.conversationId) {
+        await this.chatSessionRepo.updateSession(activeSession.id, {
+          conversationId: response.conversationId,
+        });
+        activeSession.conversationId = response.conversationId;
+      }
 
       // Add assistant message to conversation
       this.conversationService.addMessage(conversationId, {
@@ -1128,12 +1263,13 @@ export class TelegramService {
 
       let responseText = response.content;
       if (context.isPrivate) {
+        const chatTitle = activeSession.title;
         const modelLabel = response.model || (
           selectedProvider === 'argon' ? 'Gemini 4 Argon' :
           selectedProvider === 'antigravity' ? 'Google Antigravity CLI' :
           env.GROQ_MODEL
         );
-        responseText += `\n\n—\n🤖 Модель: ${modelLabel}`;
+        responseText += `\n\n💬 Чат: ${chatTitle}\n🤖 Модель: ${modelLabel}`;
       }
 
       // Send response to Telegram (split if too long)
@@ -1199,6 +1335,9 @@ export class TelegramService {
     await this.bot.api.setMyCommands([
       { command: 'start', description: 'Начать работу' },
       { command: 'help', description: 'Список команд' },
+      { command: 'chats', description: 'Список ваших диалогов (сессий)' },
+      { command: 'new', description: 'Создать новый диалог' },
+      { command: 'rename', description: 'Переименовать текущий диалог' },
       { command: 'note', description: 'Распаковать идею в ТЗ для агента' },
       { command: 'ideas', description: 'Список сохраненных идей' },
       { command: 'cancel_note', description: 'Отменить сессию идеи' },

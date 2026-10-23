@@ -87,6 +87,7 @@ ${ragContext}`,
         model: request.model,
         maxTokens: request.maxTokens,
         userId: request.userId,
+        conversationId: request.conversationId,
       },
       request.provider
     );
@@ -96,6 +97,7 @@ ${ragContext}`,
     return {
       content: response.content,
       model: response.model,
+      conversationId: response.conversationId,
       files: response.files,
       actions: response.actions,
     };

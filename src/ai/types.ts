@@ -9,6 +9,7 @@ export interface AIChatInput {
   model?: string;
   maxTokens?: number;
   userId?: string;
+  conversationId?: string;
   temperature?: number;
   responseFormat?: { type: 'json_object' | 'text' };
 }
@@ -16,6 +17,7 @@ export interface AIChatInput {
 export interface AIChatResponse {
   content: string;
   model: string;
+  conversationId?: string;
   files?: Array<{ path: string; filename?: string; caption?: string }>;
   actions?: string[];
 }

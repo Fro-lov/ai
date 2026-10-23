@@ -14,6 +14,7 @@ import { chatRoute } from './routes/chat.route';
 import { adminRoute } from './routes/admin.route';
 import { MemoryConversationStore } from './conversation/memory.store';
 import { ConversationService } from './conversation/conversation.service';
+import { ChatSessionRepository } from './conversation/chat-session.repository';
 import { AIService } from './ai/ai.service';
 import { GroqProvider, ArgonProvider, AntigravityProvider } from './ai';
 import { ChatService } from './chat/chat.service';
@@ -48,6 +49,8 @@ async function buildServer() {
     conversationStore,
     parseInt(env.CONVERSATION_HISTORY_LIMIT)
   );
+  const chatSessionRepo = new ChatSessionRepository();
+  await chatSessionRepo.init();
 
   // Initialize Telegram bot if enabled
   let telegramService: TelegramService | null = null;
@@ -60,7 +63,8 @@ async function buildServer() {
       undefined,
       argonProvider,
       undefined,
-      antigravityProvider
+      antigravityProvider,
+      chatSessionRepo
     );
   }
 

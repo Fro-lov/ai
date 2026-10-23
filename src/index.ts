@@ -15,7 +15,7 @@ import { adminRoute } from './routes/admin.route';
 import { MemoryConversationStore } from './conversation/memory.store';
 import { ConversationService } from './conversation/conversation.service';
 import { AIService } from './ai/ai.service';
-import { GroqProvider, ArgonProvider } from './ai';
+import { GroqProvider, ArgonProvider, AntigravityProvider } from './ai';
 import { ChatService } from './chat/chat.service';
 import { TelegramService } from './telegram/telegram.service';
 import { PromptService } from './prompts/prompt.service';
@@ -37,7 +37,8 @@ async function buildServer() {
 
   // Initialize AI services
   const argonProvider = new ArgonProvider();
-  const aiService = new AIService([new GroqProvider(), argonProvider], env.AI_DEFAULT_PROVIDER);
+  const antigravityProvider = new AntigravityProvider();
+  const aiService = new AIService([new GroqProvider(), argonProvider, antigravityProvider], env.AI_DEFAULT_PROVIDER);
   const promptService = new PromptService();
   const chatService = new ChatService(aiService, promptService, ragService);
 
@@ -57,7 +58,9 @@ async function buildServer() {
       promptService,
       aiService,
       undefined,
-      argonProvider
+      argonProvider,
+      undefined,
+      antigravityProvider
     );
   }
 

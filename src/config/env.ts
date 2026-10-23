@@ -21,6 +21,8 @@ const envSchema = z.object({
   ADMIN_TELEGRAM_IDS: z.string().default(''),
   ARGON_ENGINE_URL: z.string().default('http://127.0.0.1:8085'),
   ARGON_SECRET_TOKEN: z.string().default('onter_argon_secret_2026'),
+  ANTIGRAVITY_BIN_PATH: z.string().default(process.platform === 'win32' ? 'agy' : '/home/opc/.local/bin/agy'),
+  ANTIGRAVITY_WORKSPACE: z.string().default(process.platform === 'win32' ? './workspace' : '/workspace'),
   POSTGRES_HOST: z.string().default('127.0.0.1'),
   POSTGRES_PORT: z.string().default('5432'),
   POSTGRES_USER: z.string().default('onter_ai'),

@@ -8,7 +8,7 @@ import { FormatterService, formatterService as defaultFormatterService } from '.
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { TelegramMessageContext } from './telegram.types';
-import { ArgonProvider } from '../ai';
+import { ArgonProvider, AntigravityProvider } from '../ai';
 import { NoteService, NoteQuestionResponse, IdeaRecord } from '../notes';
 
 export class TelegramService {
@@ -19,6 +19,7 @@ export class TelegramService {
   private aiService: AIService;
   private formatterService: FormatterService;
   private argonProvider?: ArgonProvider;
+  private antigravityProvider?: AntigravityProvider;
   private noteService: NoteService;
   private userSelectedProvider: Map<number, string> = new Map();
 
@@ -29,7 +30,8 @@ export class TelegramService {
     aiService: AIService,
     formatterService: FormatterService = defaultFormatterService,
     argonProvider?: ArgonProvider,
-    noteService?: NoteService
+    noteService?: NoteService,
+    antigravityProvider?: AntigravityProvider
   ) {
     this.bot = new Bot(env.TELEGRAM_BOT_TOKEN!);
     this.conversationService = conversationService;
@@ -38,6 +40,7 @@ export class TelegramService {
     this.aiService = aiService;
     this.formatterService = formatterService;
     this.argonProvider = argonProvider;
+    this.antigravityProvider = antigravityProvider;
     this.noteService = noteService || new NoteService(aiService);
 
     this.setupHandlers();
@@ -66,6 +69,8 @@ export class TelegramService {
     this.bot.command('ideas', this.handleIdeasCommand.bind(this));
     this.bot.command('notes', this.handleIdeasCommand.bind(this));
     this.bot.command('argon', this.handleArgon.bind(this));
+    this.bot.command('agy', this.handleAgy.bind(this));
+    this.bot.command('antigravity', this.handleAgy.bind(this));
     this.bot.command('cookies', this.handleCookies.bind(this));
     this.bot.command('model', this.handleModel.bind(this));
     this.bot.command('getfile', this.handleGetFile.bind(this));
@@ -307,7 +312,8 @@ export class TelegramService {
 /argon &lt;задача&gt; - Запуск автономного агента в /workspace
 /getfile &lt;путь&gt; - Скачать файл из /workspace в Telegram
 /status - Проверка состояния сервера и сессии Gemini 4
-/model &lt;groq|argon&gt; - Переключение модели диалога
+/model &lt;groq|argon|agy&gt; - Переключение модели диалога
+/agy &lt;задача&gt; - Запуск агента Antigravity в /workspace
 /cookies &lt;1PSID&gt; &lt;1PSIDTS&gt; - Горячее обновление кук веб-сессии`;
     }
 
@@ -377,6 +383,69 @@ export class TelegramService {
     }
   }
 
+  private async handleAgy(ctx: Context): Promise<void> {
+    const userId = ctx.from?.id;
+    if (!this.isAdmin(userId)) {
+      await ctx.reply('⛔ Доступ ограничен. Модель Google Antigravity CLI и автономный агент доступны исключительно администраторам.');
+      return;
+    }
+
+    const messageText = ctx.message?.text || '';
+    const task = messageText.replace(/^\/(agy|antigravity)(@\w+)?/i, '').trim();
+
+    if (!task) {
+      await ctx.reply('ℹ️ Использование: `/agy <описание задачи>`\n\nПример:\n`/agy создай в директории скрипт healthcheck.sh и проверь его запуск`');
+      return;
+    }
+
+    if (!this.antigravityProvider) {
+      await ctx.reply('⚠️ Сервис Antigravity Provider не инициализирован или недоступен.');
+      return;
+    }
+
+    const statusMsg = await ctx.reply('🚀 <b>[Antigravity CLI]</b> Запуск автономного агента в /workspace...', { parse_mode: 'HTML' });
+
+    try {
+      await ctx.api.sendChatAction(ctx.chat!.id, 'typing');
+      const result = await this.antigravityProvider.runAutonomousTask(task);
+
+      if (result.success) {
+        const report = `✅ <b>[Antigravity] Задача выполнена!</b>\n\n${result.report}`;
+        await this.sendLongMessage(ctx, report);
+      } else {
+        const errReport = result.report || `❌ <b>[Antigravity] Ошибка выполнения:</b>\n${result.error || 'Неизвестная ошибка'}`;
+        await this.sendLongMessage(ctx, errReport);
+      }
+
+      // Отправка сгенерированных агентом файлов в Telegram если есть
+      if (result.files && result.files.length > 0) {
+        for (const fileInfo of result.files) {
+          try {
+            await ctx.api.sendChatAction(ctx.chat!.id, 'upload_document');
+            const buffer = await this.antigravityProvider.downloadWorkspaceFile(fileInfo.path);
+            const filename = fileInfo.filename || path.basename(fileInfo.path);
+            await ctx.replyWithDocument(new InputFile(buffer, filename), {
+              caption: fileInfo.caption || `📄 Файл: <code>${fileInfo.path}</code>`,
+              parse_mode: 'HTML',
+            });
+          } catch (fileErr) {
+            logger.error(`Error sending generated file '${fileInfo.path}': ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`);
+            await ctx.reply(`⚠️ Не удалось передать файл <code>${fileInfo.path}</code>: ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`, { parse_mode: 'HTML' });
+          }
+        }
+      }
+    } catch (err) {
+      logger.error(`Error in /agy command: ${err instanceof Error ? err.message : String(err)}`);
+      await ctx.reply(`❌ Сбой работы Antigravity CLI: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id);
+      } catch {
+        // ignore delete failure
+      }
+    }
+  }
+
   private async handleGetFile(ctx: Context): Promise<void> {
     const userId = ctx.from?.id;
     if (!this.isAdmin(userId)) {
@@ -392,14 +461,17 @@ export class TelegramService {
       return;
     }
 
-    if (!this.argonProvider) {
-      await ctx.reply('⚠️ Сервис Argon Engine не инициализирован.');
-      return;
-    }
-
     try {
       await ctx.api.sendChatAction(ctx.chat!.id, 'upload_document');
-      const buffer = await this.argonProvider.downloadWorkspaceFile(filePath);
+      let buffer: Buffer;
+      if (this.antigravityProvider) {
+        buffer = await this.antigravityProvider.downloadWorkspaceFile(filePath);
+      } else if (this.argonProvider) {
+        buffer = await this.argonProvider.downloadWorkspaceFile(filePath);
+      } else {
+        await ctx.reply('⚠️ Сервисы работы с файлами не инициализированы.');
+        return;
+      }
       const filename = path.basename(filePath);
       await ctx.replyWithDocument(new InputFile(buffer, filename), {
         caption: `📄 Файл из /workspace: <code>${filePath}</code>`,
@@ -479,15 +551,17 @@ export class TelegramService {
 
     if (!arg) {
       const current = this.userSelectedProvider.get(userId) || env.AI_DEFAULT_PROVIDER;
-      await ctx.reply(`ℹ️ Текущий провайдер: <b>${current}</b>\n\nИспользование: <code>/model groq</code> или <code>/model argon</code>`, { parse_mode: 'HTML' });
+      await ctx.reply(`ℹ️ Текущий провайдер: <b>${current}</b>\n\nИспользование: <code>/model groq</code>, <code>/model argon</code> или <code>/model agy</code>`, { parse_mode: 'HTML' });
       return;
     }
 
-    if (arg === 'argon' || arg === 'groq') {
-      this.userSelectedProvider.set(userId, arg);
-      await ctx.reply(`✅ Модель переключена на: <b>${arg === 'argon' ? 'Gemini 4 Argon' : 'Groq Llama-3.1'}</b>`, { parse_mode: 'HTML' });
+    if (arg === 'argon' || arg === 'groq' || arg === 'agy' || arg === 'antigravity') {
+      const canonical = (arg === 'agy' || arg === 'antigravity') ? 'antigravity' : arg;
+      this.userSelectedProvider.set(userId, canonical);
+      const name = canonical === 'argon' ? 'Gemini 4 Argon' : canonical === 'antigravity' ? 'Google Antigravity CLI' : 'Groq Llama-3.1';
+      await ctx.reply(`✅ Модель переключена на: <b>${name}</b>`, { parse_mode: 'HTML' });
     } else {
-      await ctx.reply('⚠️ Недопустимый провайдер. Допустимые значения: `groq`, `argon`');
+      await ctx.reply('⚠️ Недопустимый провайдер. Допустимые значения: `groq`, `argon`, `agy`');
     }
   }
 
@@ -1052,15 +1126,32 @@ export class TelegramService {
         content: response.content,
       });
 
+      let responseText = response.content;
+      if (context.isPrivate) {
+        const modelLabel = response.model || (
+          selectedProvider === 'argon' ? 'Gemini 4 Argon' :
+          selectedProvider === 'antigravity' ? 'Google Antigravity CLI' :
+          env.GROQ_MODEL
+        );
+        responseText += `\n\n—\n🤖 Модель: ${modelLabel}`;
+      }
+
       // Send response to Telegram (split if too long)
-      await this.sendLongMessage(ctx, response.content);
+      await this.sendLongMessage(ctx, responseText);
 
       // Send generated files if any
-      if (response.files && response.files.length > 0 && this.argonProvider) {
+      if (response.files && response.files.length > 0) {
         for (const fileInfo of response.files) {
           try {
             await ctx.api.sendChatAction(context.chatId, 'upload_document');
-            const buffer = await this.argonProvider.downloadWorkspaceFile(fileInfo.path);
+            let buffer: Buffer;
+            if (this.antigravityProvider && selectedProvider === 'antigravity') {
+              buffer = await this.antigravityProvider.downloadWorkspaceFile(fileInfo.path);
+            } else if (this.argonProvider) {
+              buffer = await this.argonProvider.downloadWorkspaceFile(fileInfo.path);
+            } else {
+              continue;
+            }
             const filename = fileInfo.filename || path.basename(fileInfo.path);
             await ctx.replyWithDocument(new InputFile(buffer, filename), {
               caption: fileInfo.caption || `📄 Файл: <code>${fileInfo.path}</code>`,
@@ -1112,8 +1203,9 @@ export class TelegramService {
       { command: 'ideas', description: 'Список сохраненных идей' },
       { command: 'cancel_note', description: 'Отменить сессию идеи' },
       { command: 'status', description: 'Состояние хаба и сессий' },
-      { command: 'model', description: 'Переключить модель (groq/argon)' },
-      { command: 'argon', description: 'Запустить агента в /workspace' },
+      { command: 'model', description: 'Переключить модель (groq/argon/agy)' },
+      { command: 'agy', description: 'Запустить агента Antigravity в /workspace' },
+      { command: 'argon', description: 'Запустить агента Argon в /workspace' },
       { command: 'getfile', description: 'Скачать файл из /workspace' },
       { command: 'cookies', description: 'Обновить куки Gemini 4' },
       { command: 'reset', description: 'Очистить историю диалога' },
